@@ -1,0 +1,24 @@
+# Secrets & credentials — never commit these
+.env
+credentials.json
+token.json
+
+# Local state files
+.dist_cache.json
+.calcom_imported.json
+greenguard.db
+logs/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+
+# macOS
+.DS_Store
+
+# Launchd plist (machine-specific)
+greenguard-agent.plist
