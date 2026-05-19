@@ -41,6 +41,14 @@ def init_db() -> None:
                 key   TEXT PRIMARY KEY,
                 value TEXT
             );
+
+            CREATE TABLE IF NOT EXISTS webhook_events (
+                uid                 TEXT PRIMARY KEY,
+                sku                 TEXT,
+                stripe_customer_id  TEXT,
+                invoice_id          TEXT,
+                processed_at        REAL NOT NULL
+            );
         """)
 
 
@@ -140,4 +148,27 @@ def set_state(key: str, value: str) -> None:
         con.execute(
             "INSERT OR REPLACE INTO agent_state (key, value) VALUES (?, ?)",
             (key, value),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Webhook idempotency
+# ---------------------------------------------------------------------------
+
+def is_webhook_processed(uid: str) -> bool:
+    with _conn() as con:
+        return bool(
+            con.execute(
+                "SELECT 1 FROM webhook_events WHERE uid = ?", (uid,)
+            ).fetchone()
+        )
+
+
+def record_webhook(uid: str, sku: str, stripe_customer_id: str, invoice_id: str = "") -> None:
+    with _conn() as con:
+        con.execute(
+            """INSERT OR REPLACE INTO webhook_events
+               (uid, sku, stripe_customer_id, invoice_id, processed_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (uid, sku, stripe_customer_id, invoice_id, time.time()),
         )
