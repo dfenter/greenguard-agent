@@ -46,7 +46,7 @@ def _load_prices() -> dict[str, str]:
 def _get_draft_invoice(customer_id: str) -> dict | None:
     """Return most recent draft invoice with appointment metadata."""
     for inv in stripe.Invoice.list(customer=customer_id, status="draft", limit=5).data:
-        meta = {k: v for k, v in inv.metadata.items()} if inv.metadata else {}
+        meta = {k: v for k, v in inv.metadata.to_dict().items()} if inv.metadata else {}
         if "appointment_date" in meta or "billing_date" in meta:
             return {
                 "id":               inv.id,
@@ -63,7 +63,7 @@ def _get_trialing_subscription(customer_id: str) -> dict | None:
     subs = stripe.Subscription.list(customer=customer_id, status="trialing", limit=1)
     if subs.data:
         s = subs.data[0]
-        meta = {k: v for k, v in s.metadata.items()} if s.metadata else {}
+        meta = {k: v for k, v in s.metadata.to_dict().items()} if s.metadata else {}
         trial_end = datetime.fromtimestamp(s.trial_end, tz=timezone.utc) if s.trial_end else None
         return {
             "id":               s.id,
