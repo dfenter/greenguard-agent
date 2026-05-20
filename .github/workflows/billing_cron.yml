@@ -1,0 +1,15 @@
+name: Daily Billing Run
+
+on:
+  schedule:
+    - cron: "0 11 * * *"   # 6am CT (UTC-5) = 11am UTC
+
+jobs:
+  bill:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger billing run
+        run: |
+          curl -sf -X POST https://greenguard-agent-tmw2.onrender.com/billing/run \
+            -H "Content-Type: application/json" \
+            -w "\nHTTP %{http_code}\n"

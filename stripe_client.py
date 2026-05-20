@@ -1,15 +1,22 @@
 """
 Stripe API wrapper for GreenGuard USA.
-Handles customer lookup/creation, subscriptions, and one-time invoices.
+
+Billing is intentionally delayed 3 days after the appointment date:
+  - Subscriptions: trial_end = appointment_dt + 3 days (Stripe auto-charges after)
+  - One-time:      draft invoice created at booking, finalized by daily billing runner
 """
 
 import os
+from datetime import datetime, timedelta, timezone
+
 import stripe
 from dotenv import load_dotenv
 
 load_dotenv()
 
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY", "")
+
+BILLING_DELAY_DAYS = 3
 
 
 def _check_key():
@@ -20,86 +27,129 @@ def _check_key():
 # ── Customers ─────────────────────────────────────────────────────────────────
 
 def find_customer(email: str) -> str | None:
-    """Return Stripe customer ID for this email, or None if not found."""
     _check_key()
     results = stripe.Customer.search(query=f'email:"{email}"', limit=1)
-    if results.data:
-        return results.data[0].id
-    return None
+    return results.data[0].id if results.data else None
 
 
 def create_customer(name: str, email: str, phone: str | None = None) -> str:
-    """Create a Stripe customer and return their customer ID."""
     _check_key()
     params: dict = {"name": name, "email": email}
     if phone:
         params["phone"] = phone
-    customer = stripe.Customer.create(**params)
-    return customer.id
+    return stripe.Customer.create(**params).id
 
 
 def get_or_create_customer(name: str, email: str, phone: str | None = None) -> str:
-    """Find existing customer by email or create a new one."""
-    cid = find_customer(email)
-    if cid:
-        return cid
-    return create_customer(name, email, phone)
+    return find_customer(email) or create_customer(name, email, phone)
 
 
-# ── Subscriptions ─────────────────────────────────────────────────────────────
+# ── Subscriptions (recurring billing) ────────────────────────────────────────
 
 def get_active_subscription(customer_id: str) -> dict | None:
-    """Return active subscription dict or None."""
+    """Return active or trialing subscription, or None."""
     _check_key()
-    subs = stripe.Subscription.list(customer=customer_id, status="active", limit=1)
-    if subs.data:
-        s = subs.data[0]
-        return {"id": s.id, "price_id": s["items"].data[0].price.id}
+    for status in ("active", "trialing"):
+        subs = stripe.Subscription.list(customer=customer_id, status=status, limit=1)
+        if subs.data:
+            s = subs.data[0]
+            return {"id": s.id, "price_id": s["items"].data[0].price.id, "status": status}
     return None
 
 
-def create_subscription(customer_id: str, price_id: str) -> str:
+def create_subscription(customer_id: str, price_id: str, appointment_dt: datetime) -> str:
     """
-    Create a monthly subscription. Returns subscription ID.
-    Uses trial_end='now' so billing starts immediately on the next billing cycle.
-    Invoice is created and sent immediately on creation.
+    Create a monthly subscription with a trial ending 3 days after the appointment.
+    Stripe auto-charges on trial_end and monthly thereafter.
+    Returns subscription ID.
     """
     _check_key()
+    billing_start = appointment_dt + timedelta(days=BILLING_DELAY_DAYS)
+    trial_end_ts  = int(billing_start.astimezone(timezone.utc).timestamp())
+
     sub = stripe.Subscription.create(
         customer=customer_id,
         items=[{"price": price_id}],
-        payment_behavior="default_incomplete",
-        expand=["latest_invoice.payment_intent"],
+        trial_end=trial_end_ts,
         collection_method="send_invoice",
         days_until_due=14,
+        metadata={"appointment_date": appointment_dt.date().isoformat()},
     )
     return sub.id
 
 
 # ── One-time invoices ─────────────────────────────────────────────────────────
 
-def add_invoice_item(customer_id: str, price_id: str, description: str) -> None:
-    """Add a line item to the customer's pending invoice."""
-    _check_key()
-    stripe.InvoiceItem.create(
-        customer=customer_id,
-        price=price_id,
-        description=description,
-    )
-
-
-def finalize_and_send_invoice(customer_id: str, description: str = "") -> str:
+def create_draft_invoice(
+    customer_id: str,
+    price_id: str,
+    sku_code: str,
+    sku_label: str,
+    appointment_dt: datetime,
+) -> str:
     """
-    Create a Stripe invoice from pending invoice items, finalize, and send.
+    Create a draft Stripe invoice with billing scheduled 3 days after appointment.
+    Invoice stays in draft until the daily billing runner finalizes it.
     Returns invoice ID.
     """
     _check_key()
+    billing_date = (appointment_dt + timedelta(days=BILLING_DELAY_DAYS)).date().isoformat()
+
     invoice = stripe.Invoice.create(
         customer=customer_id,
+        auto_advance=False,          # stays as draft until we explicitly finalize
         collection_method="send_invoice",
         days_until_due=14,
-        description=description,
+        description=f"GreenGuard service — {sku_label}",
+        metadata={
+            "billing_date": billing_date,
+            "sku": sku_code,
+            "appointment_date": appointment_dt.date().isoformat(),
+        },
     )
-    invoice = stripe.Invoice.finalize_invoice(invoice.id)
-    stripe.Invoice.send_invoice(invoice.id)
+    # Attach the line item directly to this draft invoice
+    stripe.InvoiceItem.create(
+        customer=customer_id,
+        price=price_id,
+        invoice=invoice.id,
+        description=sku_label,
+    )
     return invoice.id
+
+
+# ── Daily billing runner ──────────────────────────────────────────────────────
+
+def process_due_invoices() -> list[dict]:
+    """
+    Find all draft invoices where billing_date <= today and finalize + send them.
+    Called by the /billing/run endpoint daily at 6am CT.
+    Returns list of {invoice_id, customer_email, sku, billing_date} for each processed.
+    """
+    _check_key()
+    today = datetime.now(timezone.utc).date().isoformat()
+    processed = []
+
+    for invoice in stripe.Invoice.list(status="draft", limit=100).auto_paging_iter():
+        billing_date = (invoice.metadata or {}).get("billing_date", "")
+        if not billing_date or billing_date > today:
+            continue
+
+        try:
+            stripe.Invoice.finalize_invoice(invoice.id)
+            stripe.Invoice.send_invoice(invoice.id)
+            processed.append({
+                "invoice_id":     invoice.id,
+                "customer":       invoice.customer,
+                "sku":            (invoice.metadata or {}).get("sku", ""),
+                "billing_date":   billing_date,
+                "amount":         f"${invoice.amount_due / 100:.2f}",
+            })
+        except stripe.StripeError as e:
+            processed.append({
+                "invoice_id":  invoice.id,
+                "customer":    invoice.customer,
+                "error":       str(e),
+                "billing_date": billing_date,
+            })
+
+    return processed
