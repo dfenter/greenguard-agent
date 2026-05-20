@@ -265,7 +265,7 @@ def fetch_week(calendar_service, start: datetime, end: datetime) -> dict[str, li
             timeMax=end.isoformat(),
             singleEvents=True,
             orderBy="startTime",
-            fields="items(summary,start,end,description,location)",
+            fields="items(id,summary,start,end,description,location)",
         )
         .execute()
     )
@@ -278,22 +278,47 @@ def fetch_week(calendar_service, start: datetime, end: datetime) -> dict[str, li
         desc   = ev.get("description", "") or ""
         dt     = datetime.fromisoformat(raw_start).astimezone(TZ)
         dt_end = datetime.fromisoformat(ev["end"]["dateTime"]).astimezone(TZ)
+        duration_mins = int((dt_end - dt).total_seconds() / 60)
         day_key = dt.strftime("%a %b %-d")
         name    = ev.get("summary", "").split(":")[0].strip()
-        acuity_id   = _extract_acuity_id(desc)
+        acuity_id = _extract_acuity_id(desc)
         days.setdefault(day_key, []).append({
-            "name":         name,
-            "sched":        dt.strftime("%-I:%M%p").lower(),
-            "dt":           dt,
-            "dt_end":       dt_end,
-            "address":      extract_address(ev),
-            "notes":        extract_notes(ev),
-            "email":        _extract_email(desc),
-            "is_acuity":    acuity_id is not None,
-            "acuity_link":  _extract_acuity_link(desc),
-            "calcom_uid":   None,  # populated below for Cal.com bookings
+            "name":          name,
+            "sched":         dt.strftime("%-I:%M%p").lower(),
+            "dt":            dt,
+            "dt_end":        dt_end,
+            "duration_mins": duration_mins,
+            "address":       extract_address(ev),
+            "notes":         extract_notes(ev),
+            "email":         _extract_email(desc),
+            "is_acuity":     acuity_id is not None,
+            "acuity_link":   _extract_acuity_link(desc),
+            "gcal_id":       ev.get("id"),
+            "calcom_uid":    None,
         })
     return days
+
+
+def _reschedule_gcal_event(
+    calendar_service,
+    gcal_id: str,
+    new_start: datetime,
+    duration_mins: int,
+) -> tuple[bool, str]:
+    """Update a Google Calendar event's start/end time directly."""
+    new_end = new_start + timedelta(minutes=duration_mins)
+    try:
+        calendar_service.events().patch(
+            calendarId="primary",
+            eventId=gcal_id,
+            body={
+                "start": {"dateTime": new_start.isoformat(), "timeZone": TZ_NAME},
+                "end":   {"dateTime": new_end.isoformat(),   "timeZone": TZ_NAME},
+            },
+        ).execute()
+        return True, "OK"
+    except Exception as e:
+        return False, str(e)
 
 
 # ── Cross-day analysis ───────────────────────────────────────────────────────
@@ -369,12 +394,21 @@ def suggest_cross_day_moves(
 
 # ── Interactive rescheduling ──────────────────────────────────────────────────
 
-def interactive_reschedule(suggestions: list[dict], days: dict) -> None:
+def interactive_reschedule(
+    suggestions: list[dict],
+    days: dict,
+    calendar_service=None,
+    notify: bool = False,
+) -> None:
     """
     Walk through each suggestion one-by-one for manual approval.
     Approved moves are queued then applied in batch after final confirm.
-    Cal.com bookings → API reschedule.
-    Acuity bookings → print manual Change Appointment link.
+
+    Priority:
+      Cal.com bookings  → Cal.com API reschedule (notify=False by default)
+      All other events  → Google Calendar patch (date/time update only)
+
+    notify=True sends Cal.com reschedule emails to customers.
     """
     if not suggestions:
         print("  No cross-day moves suggested.")
@@ -424,13 +458,14 @@ def interactive_reschedule(suggestions: list[dict], days: dict) -> None:
             email = (appt.get("email") or "").lower()
             uid   = uid_by_email.get(email)
             queue.append({
-                "name":        s["name"],
-                "src_day":     s["src_day"],
-                "dst_day":     s["dst_day"],
-                "new_dt":      proposed_dt,
-                "is_acuity":   appt["is_acuity"],
-                "acuity_link": appt.get("acuity_link"),
-                "calcom_uid":  uid,
+                "name":          s["name"],
+                "src_day":       s["src_day"],
+                "dst_day":       s["dst_day"],
+                "new_dt":        proposed_dt,
+                "duration_mins": appt.get("duration_mins", 30),
+                "is_acuity":     appt["is_acuity"],
+                "gcal_id":       appt.get("gcal_id"),
+                "calcom_uid":    uid,
             })
             print("    → Queued\n")
         else:
@@ -453,19 +488,27 @@ def interactive_reschedule(suggestions: list[dict], days: dict) -> None:
 
     print()
     for m in queue:
-        name = m["name"]
-        if m["is_acuity"]:
-            print(f"  {name} — Acuity booking (manual reschedule required)")
-            if m["acuity_link"]:
-                print(f"    Link: {m['acuity_link']}")
-            else:
-                print(f"    No Change Appointment link found — reschedule in Acuity directly.")
-        elif m["calcom_uid"]:
-            ok, msg = calcom_client.reschedule_booking(m["calcom_uid"], m["new_dt"], notify=False)
+        name     = m["name"]
+        new_time = m["new_dt"].strftime("%Y-%m-%d %H:%M")
+
+        if m["calcom_uid"]:
+            # Cal.com-native booking — use API (fast, handles Cal.com calendar sync)
+            ok, msg = calcom_client.reschedule_booking(m["calcom_uid"], m["new_dt"], notify=notify)
+            status  = "✓" if ok else f"✗ {msg}"
+            print(f"  {name} — Cal.com → {new_time}  {status}")
+
+        elif m["gcal_id"] and calendar_service:
+            # Acuity or other Google Calendar event — patch directly
+            ok, msg = _reschedule_gcal_event(
+                calendar_service, m["gcal_id"], m["new_dt"], m["duration_mins"]
+            )
             status = "✓" if ok else f"✗ {msg}"
-            print(f"  {name} — Cal.com reschedule {status}")
+            src = "Acuity/GCal"
+            print(f"  {name} — {src} → {new_time}  {status}")
+
         else:
-            print(f"  {name} — Cal.com booking UID not found (reschedule manually in Cal.com)")
+            print(f"  {name} — no calendar ID found, reschedule manually")
+
     print()
 
 
@@ -477,6 +520,7 @@ def run(
     end:   datetime | None = None,
     live_traffic: bool = False,
     reschedule: bool = False,
+    notify: bool = False,
 ):
     if start is None:
         today = datetime.now(TZ)
@@ -587,7 +631,7 @@ def run(
         print("  Schedule is well optimized — no cross-day moves suggested.\n")
 
     if reschedule:
-        interactive_reschedule(suggestions, days)
+        interactive_reschedule(suggestions, days, calendar_service=calendar_service, notify=notify)
 
 
 if __name__ == "__main__":
@@ -596,6 +640,7 @@ if __name__ == "__main__":
 
     live        = "--live"       in sys.argv
     reschedule  = "--reschedule" in sys.argv
+    notify      = "--notify"     in sys.argv
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
 
     _, creds = authenticate()
@@ -606,4 +651,4 @@ if __name__ == "__main__":
         start = datetime.fromisoformat(args[0]).replace(tzinfo=TZ)
         end   = datetime.fromisoformat(args[1]).replace(hour=23, minute=59, tzinfo=TZ)
 
-    run(cal, start, end, live_traffic=live, reschedule=reschedule)
+    run(cal, start, end, live_traffic=live, reschedule=reschedule, notify=notify)
