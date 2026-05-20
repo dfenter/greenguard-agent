@@ -17,13 +17,17 @@ import hmac
 import json
 import logging
 import os
+import secrets
 from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Header, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
+import calcom_client
 import db
 import sku_engine
 import stripe_client
@@ -31,8 +35,18 @@ import stripe_client
 load_dotenv()
 
 CALCOM_WEBHOOK_SECRET = os.getenv("CALCOM_WEBHOOK_SECRET", "")
+ADMIN_PASSWORD        = os.getenv("ADMIN_PASSWORD", "")
 PRICES_FILE  = Path(__file__).parent / "stripe_prices.json"
 ADDONS_FILE  = Path(__file__).parent / "customer_addons.json"
+
+_basic_auth = HTTPBasic()
+_TZ_CT = ZoneInfo("America/Chicago")
+
+
+def _require_admin(credentials: HTTPBasicCredentials = Depends(_basic_auth)):
+    ok = ADMIN_PASSWORD and secrets.compare_digest(credentials.password, ADMIN_PASSWORD)
+    if not ok:
+        raise HTTPException(status_code=401, headers={"WWW-Authenticate": "Basic realm=GreenGuard Admin"})
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)s  %(message)s")
 log = logging.getLogger("webhook")
@@ -180,13 +194,110 @@ async def billing_run(request: Request):
     prices = _load_prices()
     addons = json.loads(ADDONS_FILE.read_text()) if ADDONS_FILE.exists() else {}
     results = stripe_client.process_due_invoices(prices, addons)
-    log.info(f"Billing run: {len(results)} invoice(s) processed")
+    alerts  = [r for r in results if r.get("alert")]
+    log.info(f"Billing run: {len(results)} invoice(s) processed, {len(alerts)} alert(s)")
     for r in results:
+        if r.get("alert"):
+            log.warning(f"ALERT {r['email']}: {r['alert']}")
         if "error" in r:
             log.error(f"Invoice {r['invoice_id']} failed: {r['error']}")
         else:
-            log.info(f"Sent invoice {r['invoice_id']} — {r.get('amount')} — {r['sku']}")
-    return JSONResponse({"processed": len(results), "invoices": results})
+            phase = r.get("phase", "")
+            log.info(f"[{phase}] {r.get('email')} — {r.get('amount')} — {r.get('action', r.get('sku', ''))}")
+    return JSONResponse({
+        "processed": len(results),
+        "alerts":    len(alerts),
+        "invoices":  results,
+    })
+
+
+# ── Admin booking page ───────────────────────────────────────────────────────
+
+_ADMIN_HTML = """<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GreenGuard — New Booking</title>
+<style>
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f0f4f0;color:#1a2e1a;min-height:100vh;padding:24px 16px}}
+.card{{max-width:540px;margin:0 auto;background:#fff;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,.08);padding:32px}}
+h1{{font-size:22px;color:#2d5a2d;margin-bottom:4px}}
+.sub{{color:#666;font-size:14px;margin-bottom:28px}}
+.field{{margin-bottom:18px}}
+label{{display:block;font-size:13px;font-weight:600;color:#444;margin-bottom:6px}}
+input,select,textarea{{width:100%;padding:10px 12px;border:1px solid #d4d4d4;border-radius:8px;font-size:15px;color:#1a2e1a;background:#fff;transition:border-color .15s}}
+input:focus,select:focus,textarea:focus{{outline:none;border-color:#2d5a2d}}
+.row{{display:grid;grid-template-columns:1fr 1fr;gap:12px}}
+button{{width:100%;padding:13px;background:#2d5a2d;color:#fff;border:none;border-radius:8px;font-size:16px;font-weight:600;cursor:pointer;margin-top:8px;transition:background .15s}}
+button:hover{{background:#1e3d1e}}
+.msg{{padding:12px;border-radius:8px;margin-bottom:20px;font-size:14px}}
+.ok{{background:#e8f5e8;color:#2d5a2d;border:1px solid #a5d6a7}}
+.err{{background:#ffeaea;color:#c62828;border:1px solid #ef9a9a}}
+@media(max-width:480px){{.row{{grid-template-columns:1fr}}}}
+</style></head>
+<body><div class="card">
+<h1>GreenGuard USA</h1>
+<p class="sub">Create a new customer booking</p>
+{msg}
+<form method="post" action="/admin/book">
+<div class="field"><label>Service Type</label>
+<select name="event_type_id" required>{options}</select></div>
+<div class="row">
+<div class="field"><label>First Name</label><input type="text" name="first_name" required placeholder="Jane"></div>
+<div class="field"><label>Last Name</label><input type="text" name="last_name" required placeholder="Smith"></div>
+</div>
+<div class="field"><label>Email</label><input type="email" name="email" required placeholder="jane@example.com"></div>
+<div class="field"><label>Phone</label><input type="tel" name="phone" placeholder="(512) 555-1234"></div>
+<div class="field"><label>Service Address</label><input type="text" name="address" required placeholder="1234 Oak St, Austin TX 78701"></div>
+<div class="field"><label>Date &amp; Time (Central Time)</label><input type="datetime-local" name="start" required></div>
+<div class="field"><label>Notes (optional)</label><textarea name="notes" rows="3" placeholder="Any special requests…"></textarea></div>
+<button type="submit">Create Booking</button>
+</form></div></body></html>"""
+
+
+def _event_type_options() -> str:
+    try:
+        types = calcom_client.list_event_types()
+        return "".join(f'<option value="{et["id"]}">{et["title"]}</option>' for et in types)
+    except Exception:
+        return '<option value="">Could not load event types</option>'
+
+
+@app.get("/admin", response_class=HTMLResponse)
+def admin_page(_: None = Depends(_require_admin)):
+    return _ADMIN_HTML.format(msg="", options=_event_type_options())
+
+
+@app.post("/admin/book", response_class=HTMLResponse)
+def admin_book(
+    _: None = Depends(_require_admin),
+    event_type_id: int  = Form(...),
+    first_name: str     = Form(...),
+    last_name: str      = Form(...),
+    email: str          = Form(...),
+    phone: str          = Form(""),
+    address: str        = Form(...),
+    start: str          = Form(...),   # datetime-local: "2026-05-21T10:00"
+    notes: str          = Form(""),
+):
+    try:
+        dt_ct  = datetime.fromisoformat(start).replace(tzinfo=_TZ_CT)
+        dt_utc = dt_ct.astimezone(ZoneInfo("UTC")).isoformat()
+        calcom_client.create_booking(
+            event_type_id=event_type_id,
+            start_utc_iso=dt_utc,
+            customer_name=f"{first_name} {last_name}".strip(),
+            customer_email=email,
+            customer_phone=phone,
+            service_address=address,
+            notes=notes,
+        )
+        msg = f'<div class="msg ok">Booking created for {first_name} {last_name} — draft email will appear in Gmail within 60 seconds.</div>'
+    except Exception as exc:
+        log.error("Admin booking error: %s", exc)
+        msg = f'<div class="msg err">Booking failed: {exc}</div>'
+
+    return _ADMIN_HTML.format(msg=msg, options=_event_type_options())
 
 
 # ── Health + debug ────────────────────────────────────────────────────────────

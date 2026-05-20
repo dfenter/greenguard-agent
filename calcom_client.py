@@ -66,6 +66,47 @@ def get_booking(uid: str) -> dict | None:
     return resp.json().get("data")
 
 
+def list_event_types() -> list[dict]:
+    """Return [{id, title, slug}] for all event types."""
+    resp = requests.get(f"{_BASE}/event-types", headers=_headers(), timeout=10)
+    resp.raise_for_status()
+    data = resp.json().get("data", [])
+    if isinstance(data, dict):
+        items = data.get("eventTypeGroups", [{}])[0].get("eventTypes", [])
+    else:
+        items = data if isinstance(data, list) else []
+    return [{"id": et["id"], "title": et["title"], "slug": et.get("slug", "")} for et in items]
+
+
+def create_booking(
+    event_type_id: int,
+    start_utc_iso: str,
+    customer_name: str,
+    customer_email: str,
+    customer_phone: str,
+    service_address: str,
+    notes: str = "",
+    timezone: str = "America/Chicago",
+) -> dict:
+    """Create a Cal.com booking. service_address becomes the 'Where:' line in the email."""
+    body: dict = {
+        "eventTypeId": event_type_id,
+        "start": start_utc_iso,
+        "attendee": {
+            "name": customer_name,
+            "email": customer_email,
+            "timeZone": timezone,
+            "phoneNumber": customer_phone,
+        },
+        "location": service_address,
+    }
+    if notes:
+        body["bookingFieldsResponses"] = {"notes": notes}
+    resp = requests.post(f"{_BASE}/bookings", headers=_headers(), json=body, timeout=15)
+    resp.raise_for_status()
+    return resp.json().get("data", {})
+
+
 def reschedule_booking(uid: str, new_start: datetime, notify: bool = False) -> tuple[bool, str]:
     """
     Reschedule a Cal.com booking.
