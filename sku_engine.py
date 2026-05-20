@@ -38,3 +38,27 @@ def resolve(slug: str) -> SKU | None:
 
 def all_skus() -> list[SKU]:
     return list(_CATALOG.values())
+
+
+# ── Add-on catalog (admin-only, not Cal.com event types) ─────────────────────
+
+_ADDONS: dict[str, SKU] = {
+    "BAIT":          SKU("BAIT",          1000,  "one_time", "Mosquito Bait Pack"),
+    "BG-SWEETSCENT": SKU("BG-SWEETSCENT", 1000,  "one_time", "BG SweetScent Lure"),
+    "CO2-ADDON":     SKU("CO2-ADDON",     4999,  "one_time", "Extra CO₂ Tank Add-On"),
+    "TRAP-INSTALL":  SKU("TRAP-INSTALL",  8000,  "one_time", "Extra Trap Installation"),
+    "TRAP-MAINT-BG": SKU("TRAP-MAINT-BG", 1000,  "one_time", "Tank Hookup + Trap Maintenance — Biogents (per trap)"),
+    "TRAP-MAINT-MQ": SKU("TRAP-MAINT-MQ", 3000,  "one_time", "Tank Hookup + Trap Maintenance — Mosqitter"),
+    "TIMER-INSTALL": SKU("TIMER-INSTALL", 2999,  "one_time", "Timer Installation"),
+    "NONCО2-UNIT":   SKU("NONCО2-UNIT",  7999,  "one_time", "Non-CO₂ Biogents Unit"),
+    "WKD-SURCH":     SKU("WKD-SURCH",    2500,  "one_time", "Weekend Service Surcharge"),
+    "TANK-RENTAL":   SKU("TANK-RENTAL",  4999,  "one_time", "CO₂ Tank — Rental/Replacement"),
+}
+
+
+def get_addon(code: str) -> SKU | None:
+    return _ADDONS.get(code)
+
+
+def all_addons() -> list[SKU]:
+    return list(_ADDONS.values())

@@ -28,7 +28,10 @@ def get_existing_products() -> dict[str, str]:
     """Return {sku_code: product_id} for products already in Stripe."""
     existing = {}
     for product in stripe.Product.list(limit=100).auto_paging_iter():
-        sku = (product.metadata or {}).get("sku")
+        try:
+            sku = product["metadata"]["sku"]
+        except (KeyError, TypeError):
+            sku = None
         if sku:
             existing[sku] = product.id
     return existing
@@ -61,7 +64,7 @@ def main():
 
     created = skipped = failed = 0
 
-    for sku in sku_engine.all_skus():
+    for sku in sku_engine.all_skus() + sku_engine.all_addons():
         # Skip duplicates
         if sku.code in existing_products:
             product_id = existing_products[sku.code]
