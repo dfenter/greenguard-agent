@@ -81,6 +81,11 @@ async def calcom_webhook(
         raise HTTPException(status_code=400, detail="Invalid JSON")
 
     trigger = payload.get("triggerEvent", "")
+    log.info(f"Webhook received: trigger={trigger} keys={list(payload.keys())}")
+
+    # Store raw payload for debugging
+    db.record_raw_webhook(trigger, body.decode())
+
     if trigger != "BOOKING_CREATED":
         return JSONResponse({"status": "ignored", "trigger": trigger})
 
@@ -157,3 +162,9 @@ async def calcom_webhook(
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/debug/webhooks")
+def debug_webhooks():
+    """Show last 10 raw webhook payloads received — for debugging only."""
+    return JSONResponse(db.get_raw_webhooks())

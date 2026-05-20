@@ -49,6 +49,13 @@ def init_db() -> None:
                 invoice_id          TEXT,
                 processed_at        REAL NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS raw_webhooks (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                trigger     TEXT,
+                payload     TEXT,
+                received_at REAL NOT NULL
+            );
         """)
 
 
@@ -162,6 +169,22 @@ def is_webhook_processed(uid: str) -> bool:
                 "SELECT 1 FROM webhook_events WHERE uid = ?", (uid,)
             ).fetchone()
         )
+
+
+def record_raw_webhook(trigger: str, payload: str) -> None:
+    with _conn() as con:
+        con.execute(
+            "INSERT INTO raw_webhooks (trigger, payload, received_at) VALUES (?, ?, ?)",
+            (trigger, payload, time.time()),
+        )
+
+
+def get_raw_webhooks() -> list[dict]:
+    with _conn() as con:
+        rows = con.execute(
+            "SELECT trigger, payload, received_at FROM raw_webhooks ORDER BY received_at DESC LIMIT 10"
+        ).fetchall()
+        return [{"trigger": r["trigger"], "payload": r["payload"], "received_at": r["received_at"]} for r in rows]
 
 
 def record_webhook(uid: str, sku: str, stripe_customer_id: str, invoice_id: str = "") -> None:
