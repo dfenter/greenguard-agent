@@ -14,3 +14,27 @@ services:
         sync: false
       - key: CALENDAR_TIMEZONE
         value: America/Chicago
+
+  - type: worker
+    name: greenguard-agent
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    plan: starter
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: GOOGLE_MAPS_API_KEY
+        sync: false
+      - key: GOOGLE_CREDENTIALS_JSON
+        sync: false
+      - key: GOOGLE_TOKEN_JSON
+        sync: false
+      - key: POLL_INTERVAL_SECONDS
+        value: 60
+      - key: CALENDAR_TIMEZONE
+        value: America/Chicago
+      - key: PROCESSED_LABEL
+        value: Greenguard-Processed
+      - key: DEPOT_ADDRESS
+        value: 1519 Parkway Austin TX 78703

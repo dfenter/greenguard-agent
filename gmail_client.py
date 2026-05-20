@@ -21,24 +21,38 @@ SCOPES = [
 _DIR = os.path.dirname(os.path.abspath(__file__))
 
 
+def _write_env_credential(env_var: str, dest_path: str) -> bool:
+    """Decode a base64 env var to a file. Returns True if written."""
+    val = os.getenv(env_var, "")
+    if not val:
+        return False
+    with open(dest_path, "w") as f:
+        f.write(base64.b64decode(val).decode())
+    return True
+
+
 def authenticate(
     credentials_path: str = None,
     token_path: str = None,
 ) -> tuple:
     """Return (gmail_service, credentials).
 
-    Automatically re-authorizes if the stored token is missing any required scope.
-    Paths default to the same directory as this file so the script works regardless
-    of which directory it is invoked from.
+    On Render (or any server), set GOOGLE_CREDENTIALS_JSON and GOOGLE_TOKEN_JSON
+    env vars to the base64-encoded contents of credentials.json and token.json.
+    Locally, the files are used directly.
     """
     if credentials_path is None:
         credentials_path = os.path.join(_DIR, "credentials.json")
     if token_path is None:
         token_path = os.path.join(_DIR, "token.json")
+
+    # On a remote server the files won't exist — decode from env vars instead
+    _write_env_credential("GOOGLE_CREDENTIALS_JSON", credentials_path)
+    _write_env_credential("GOOGLE_TOKEN_JSON", token_path)
+
     creds = None
     if os.path.exists(token_path):
         creds = Credentials.from_authorized_user_file(token_path, SCOPES)
-        # If the token was granted for a different scope set, force re-auth
         if creds and creds.scopes and not set(SCOPES).issubset(set(creds.scopes)):
             creds = None
             os.remove(token_path)
@@ -46,11 +60,13 @@ def authenticate(
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
+            with open(token_path, "w") as f:
+                f.write(creds.to_json())
         else:
             flow = InstalledAppFlow.from_client_secrets_file(credentials_path, SCOPES)
             creds = flow.run_local_server(port=0)
-        with open(token_path, "w") as f:
-            f.write(creds.to_json())
+            with open(token_path, "w") as f:
+                f.write(creds.to_json())
 
     gmail_service = build("gmail", "v1", credentials=creds)
     return gmail_service, creds

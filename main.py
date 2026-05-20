@@ -29,7 +29,10 @@ from gmail_client import (
     send_email,
 )
 from calendar_client import get_calendar_service, get_available_slots, get_route_distances
-from agent import analyze_and_draft, looks_like_scheduling
+from agent import analyze_and_draft, looks_like_scheduling, assess_appointment
+from appointment_parser import parse_appointment_email, is_appointment_notification
+from address_lookup import lookup_property
+from template_loader import get_all_templates
 from spam_filter import is_spam
 import db
 from digest import should_send_digest, build_digest
@@ -147,6 +150,84 @@ def maybe_send_digest(gmail_service, calendar_service) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Draft helpers
+# ---------------------------------------------------------------------------
+_templates_cache: dict[str, str] = {}
+_templates_cache_ts: float = 0.0
+_TEMPLATES_CACHE_TTL = 3600  # refresh Gmail templates once per hour
+
+
+def _get_templates(gmail_service) -> dict[str, str]:
+    global _templates_cache, _templates_cache_ts
+    if time.time() - _templates_cache_ts < _TEMPLATES_CACHE_TTL and _templates_cache:
+        return _templates_cache
+    try:
+        _templates_cache = get_all_templates(gmail_service)
+        _templates_cache_ts = time.time()
+        log.info("Loaded %d Gmail templates", len(_templates_cache))
+    except Exception as exc:
+        log.warning("Could not load Gmail templates: %s", exc)
+    return _templates_cache
+
+
+def _draft_assessment(gmail_service, subject: str, body: str):
+    """Parse a Cal.com booking, geocode address, run Sonnet Vision assessment."""
+    appt = parse_appointment_email(subject, body)
+    log.info(
+        "  → Appointment: %s | %s | addr=%r",
+        appt.customer_name, appt.service_date, appt.service_address,
+    )
+
+    if not appt.service_address:
+        log.warning("  → No address found in appointment email — falling back to standard draft")
+        from agent import EmailDraft
+        return EmailDraft(
+            classification="appointment_notification",
+            urgency="medium",
+            missing_info=["service address"],
+            draft_subject=f"Re: {subject}",
+            draft_body=(
+                f"Hi {appt.customer_name or 'there'},\n\n"
+                "Thank you for booking a Free Property Assessment with Greenguard USA! "
+                "We noticed your service address wasn't included in the booking — "
+                "could you reply with the address so we can prepare for your visit?\n\n"
+                "Best regards,\nGreenguard USA Customer Service\nadmin@greenguard-usa.com"
+            ),
+        )
+
+    prop = lookup_property(appt.service_address, GOOGLE_MAPS_API_KEY)
+    templates = _get_templates(gmail_service)
+    return assess_appointment(appt, prop, templates)
+
+
+def _draft_standard(gmail_service, calendar_service, email: dict):
+    """Standard email → Haiku draft with optional calendar slots."""
+    subject = email["subject"]
+    body = email["body"]
+
+    thread_history = get_thread_context(
+        gmail_service, email["thread_id"], email["id"], limit=2
+    )
+    if thread_history:
+        log.info("  → Thread context: %d prior message(s)", len(thread_history))
+
+    slots: list[str] = []
+    if calendar_service and looks_like_scheduling(subject, body):
+        try:
+            slots = _get_slots(calendar_service)
+        except Exception as exc:
+            log.warning("  → Could not fetch calendar slots: %s", exc)
+
+    return analyze_and_draft(
+        email_from=email["from"],
+        email_subject=subject,
+        email_body=body,
+        available_slots=slots or None,
+        thread_history=thread_history or None,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Core email processing
 # ---------------------------------------------------------------------------
 def process_email(
@@ -174,28 +255,11 @@ def process_email(
         mark_processed(gmail_service, email_id, [processed_label_id])
         return
 
-    # Feature 6 — thread context: fetch prior messages in this thread
-    thread_history = get_thread_context(
-        gmail_service, email["thread_id"], email_id, limit=2
-    )
-    if thread_history:
-        log.info("  → Thread context: %d prior message(s)", len(thread_history))
-
-    # Calendar slots only when email looks scheduling-related
-    slots: list[str] = []
-    if calendar_service and looks_like_scheduling(subject, email["body"]):
-        try:
-            slots = _get_slots(calendar_service)
-        except Exception as exc:
-            log.warning("  → Could not fetch calendar slots: %s", exc)
-
-    draft = analyze_and_draft(
-        email_from=sender,
-        email_subject=subject,
-        email_body=email["body"],
-        available_slots=slots or None,
-        thread_history=thread_history or None,
-    )
+    # Cal.com / Acuity appointment notification → property assessment draft
+    if is_appointment_notification(subject):
+        draft = _draft_assessment(gmail_service, subject, email["body"])
+    else:
+        draft = _draft_standard(gmail_service, calendar_service, email)
 
     log.info(
         "  → classification=%s  urgency=%s  missing=%s",
