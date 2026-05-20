@@ -65,6 +65,10 @@ EVENT_TYPES = [
     # Barrier treatment
     ("GreenGuard Barrier Treatment", "barrier-treatment", 30,
      "Barrier spray treatment for mosquito control around your property.", 4999),
+
+    # Equipment pickup
+    ("Equipment Pickup", "equipment-pickup", 30,
+     "Scheduled pickup of GreenGuard equipment from your property.", 0),
 ]
 
 

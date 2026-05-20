@@ -44,6 +44,7 @@ _CATALOG: dict[str, SKU] = {
 
     # One-time services
     "barrier-treatment":      SKU("BARRIER",  4999,  "one_time",  "GreenGuard Barrier Treatment"),
+    "equipment-pickup":       SKU("PICKUP",   0,     "one_time",  "Equipment Pickup"),
 }
 
 
