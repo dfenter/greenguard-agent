@@ -245,13 +245,7 @@ def maps_url(ordered_addrs: list[str]) -> str:
     """Return a Google Maps Directions URL for the full route including depot."""
     stops = [DEPOT] + ordered_addrs + [DEPOT]
     encoded = [urllib.parse.quote_plus(s) for s in stops]
-    origin      = encoded[0]
-    destination = encoded[-1]
-    waypoints   = "|".join(encoded[1:-1])
-    url = f"https://www.google.com/maps/dir/{origin}/{destination}"
-    if waypoints:
-        url += f"?waypoints={waypoints}"
-    return url
+    return "https://www.google.com/maps/dir/" + "/".join(encoded)
 
 
 # ── Calendar fetch ────────────────────────────────────────────────────────────
