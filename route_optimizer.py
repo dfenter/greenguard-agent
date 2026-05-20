@@ -14,6 +14,7 @@ Design:
 - Load-balance summary — stops + miles per day at a glance
 """
 
+import csv
 import json
 import os
 import re
@@ -31,7 +32,20 @@ import calcom_client
 
 load_dotenv()
 
-DEPOT        = os.getenv("DEPOT_ADDRESS", "1519 Parkway Austin TX 78703")
+DEPOT         = os.getenv("DEPOT_ADDRESS", "1519 Parkway Austin TX 78703")
+CUSTOMERS_CSV = Path(__file__).parent / "customers.csv"
+
+
+def _load_customer_tanks() -> dict[str, int]:
+    """Return {email: unit_count} from customers.csv."""
+    if not CUSTOMERS_CSV.exists():
+        return {}
+    with open(CUSTOMERS_CSV) as f:
+        return {
+            r["email"].strip().lower(): int(r["units"] or 0)
+            for r in csv.DictReader(f)
+            if r.get("units") and r["units"].strip().isdigit()
+        }
 MAPS_KEY     = os.getenv("GOOGLE_MAPS_API_KEY", "")
 TZ_NAME      = os.getenv("CALENDAR_TIMEZONE", "America/Chicago")
 TZ           = ZoneInfo(TZ_NAME)
@@ -530,16 +544,19 @@ def run(
         print("No appointments found.")
         return
 
+    customer_tanks = _load_customer_tanks()
+
     # ── Load-balance summary ──────────────────────────────────────────────────
-    print(f"\n{'─'*44}")
-    print(f"  {'Day':<14} {'Stops':>5}  Addresses")
-    print(f"{'─'*44}")
+    print(f"\n{'─'*52}")
+    print(f"  {'Day':<14} {'Stops':>5}  {'Tanks':>5}  Addresses")
+    print(f"{'─'*52}")
     for day, appts in days.items():
-        good  = sum(1 for a in appts if a["address"])
-        bad   = sum(1 for a in appts if not a["address"])
-        warn  = f"  ⚠ {bad} missing addr" if bad else ""
-        print(f"  {day:<14} {len(appts):>5}{warn}")
-    print(f"{'─'*44}\n")
+        bad       = sum(1 for a in appts if not a["address"])
+        day_t     = sum(customer_tanks.get((a.get("email") or "").lower(), 0) for a in appts)
+        warn      = f"  ⚠ {bad} missing addr" if bad else ""
+        tank_str  = str(day_t) if day_t else "-"
+        print(f"  {day:<14} {len(appts):>5}  {tank_str:>5}{warn}")
+    print(f"{'─'*52}\n")
 
     # ── Build single distance matrix for all addresses ────────────────────────
     cache     = _load_cache()
@@ -557,7 +574,7 @@ def run(
 
     dist_all, mins_all = build_matrix(all_locs, cache, departure_time=depart)
 
-    week_d = week_m = 0
+    week_d = week_m = week_tanks = 0
 
     for day, appts in days.items():
         valid   = [a for a in appts if a["address"]]
@@ -584,33 +601,41 @@ def run(
         perm, day_d, day_m = optimize(n, dist, mins)
 
         ordered_addrs = []
+        day_tanks     = 0
         prev = 0
         for rank, stop_idx in enumerate(perm, 1):
             ap    = valid[stop_idx - 1]
             d_mi  = round(dist[prev][stop_idx] / 1609.34, 1)
             d_mn  = round(mins[prev][stop_idx] / 60)
             rush  = " ⚡rush hour" if _is_rush(ap["dt"]) else ""
-            print(f"  {rank}. {ap['name']:<22} {ap['sched']}{rush}")
+            email = (ap.get("email") or "").lower()
+            tanks = customer_tanks.get(email, 0)
+            tank_str = f"  [{tanks}T]" if tanks else ""
+            print(f"  {rank}. {ap['name']:<22} {ap['sched']}{rush}{tank_str}")
             print(f"     {ap['address']}")
             print(f"     Drive: {d_mi} mi / ~{d_mn} min")
             if ap["notes"]:
                 print(f"     Note:  {ap['notes']}")
             print()
             ordered_addrs.append(ap["address"])
+            day_tanks += tanks
             prev = stop_idx
 
         ret_d = round(dist[prev][0] / 1609.34, 1)
         ret_m = round(mins[prev][0] / 60)
         print(f"  → Depot  {ret_d} mi / ~{ret_m} min")
         print(f"     {DEPOT}\n")
-        print(f"  Total: {round(day_d/1609.34,1)} mi / ~{round(day_m/60)} min")
+        tank_summary = f"  |  Tanks: {day_tanks}" if day_tanks else ""
+        print(f"  Total: {round(day_d/1609.34,1)} mi / ~{round(day_m/60)} min{tank_summary}")
         print(f"  Maps:  {maps_url(ordered_addrs)}\n")
 
-        week_d += day_d
-        week_m += day_m
+        week_d     += day_d
+        week_m     += day_m
+        week_tanks += day_tanks
 
     print(f"{'='*58}")
-    print(f"  WEEK TOTAL: {round(week_d/1609.34,1)} mi / ~{round(week_m/60)} min")
+    tank_line = f"  |  Tanks: {week_tanks}" if week_tanks else ""
+    print(f"  WEEK TOTAL: {round(week_d/1609.34,1)} mi / ~{round(week_m/60)} min{tank_line}")
     print(f"{'='*58}\n")
 
     # ── Cross-day suggestions ─────────────────────────────────────────────────
