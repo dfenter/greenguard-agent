@@ -165,9 +165,24 @@ def main():
         print(f"  Error: no Stripe price ID for {new_sku.code}")
         sys.exit(1)
 
-    # Quantity — only relevant for recurring services
+    # Billing type — let admin choose regardless of SKU default
+    if new_sku.price_cents > 0:
+        default_billing = new_sku.billing_type
+        default_label   = "recurring" if default_billing == "recurring" else "one-time"
+        print(f"\n  Default billing for this service: {default_label}")
+        choice = input("  Billing type — (r)ecurring monthly or (o)ne-time invoice? [Enter to keep default]: ").strip().lower()
+        if choice.startswith("r"):
+            billing_type = "recurring"
+        elif choice.startswith("o"):
+            billing_type = "one_time"
+        else:
+            billing_type = default_billing
+    else:
+        billing_type = "one_time"
+
+    # Quantity — only relevant for recurring
     quantity = 1
-    if new_sku.billing_type == "recurring":
+    if billing_type == "recurring":
         qty_raw = input(f"  Number of units (e.g. 2 Mosqitter rentals) [1]: ").strip()
         try:
             quantity = max(1, int(qty_raw)) if qty_raw else 1
@@ -179,6 +194,7 @@ def main():
         existing_type == "subscription"
         and trialing_sub
         and trialing_sub["price_id"] == price_id
+        and billing_type == "recurring"
     )
     if same_price and quantity != 1:
         print(f"\n  Same service — updating quantity to {quantity}")
@@ -193,7 +209,7 @@ def main():
             print("  Cancelled.")
         return
 
-    billing   = "monthly" if new_sku.billing_type == "recurring" else "one-time"
+    billing    = "monthly" if billing_type == "recurring" else "one-time"
     unit_price = new_sku.price_cents / 100
     total_price = unit_price * quantity
     price_str = f"${total_price:.2f}" if new_sku.price_cents else "free"
@@ -220,7 +236,7 @@ def main():
     if new_sku.price_cents == 0:
         print(f"  New service is free — no billing created.")
 
-    elif new_sku.billing_type == "recurring":
+    elif billing_type == "recurring":
         sub_id = stripe_client.create_subscription(
             customer_id, price_id, appointment_dt, quantity=quantity
         )
