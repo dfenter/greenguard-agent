@@ -31,7 +31,8 @@ import stripe_client
 load_dotenv()
 
 CALCOM_WEBHOOK_SECRET = os.getenv("CALCOM_WEBHOOK_SECRET", "")
-PRICES_FILE = Path(__file__).parent / "stripe_prices.json"
+PRICES_FILE  = Path(__file__).parent / "stripe_prices.json"
+ADDONS_FILE  = Path(__file__).parent / "customer_addons.json"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)s  %(message)s")
 log = logging.getLogger("webhook")
@@ -176,7 +177,9 @@ async def billing_run(request: Request):
     Called daily by GitHub Actions at 6am CT.
     Finalizes and sends all draft Stripe invoices where billing_date <= today.
     """
-    results = stripe_client.process_due_invoices()
+    prices = _load_prices()
+    addons = json.loads(ADDONS_FILE.read_text()) if ADDONS_FILE.exists() else {}
+    results = stripe_client.process_due_invoices(prices, addons)
     log.info(f"Billing run: {len(results)} invoice(s) processed")
     for r in results:
         if "error" in r:

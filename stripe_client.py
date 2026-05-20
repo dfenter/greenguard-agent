@@ -17,6 +17,39 @@ load_dotenv()
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY", "")
 
 BILLING_DELAY_DAYS = 3
+TX_TAX_RATE        = 8.25   # Texas combined sales tax %
+_tax_rate_id: str | None = None
+
+
+def get_tax_rate_id() -> str:
+    """Return cached Texas 8.25% tax rate ID, creating it in Stripe if needed."""
+    global _tax_rate_id
+    if _tax_rate_id:
+        return _tax_rate_id
+    # Check stripe_prices.json for cached ID
+    import json
+    from pathlib import Path
+    pf = Path(__file__).parent / "stripe_prices.json"
+    if pf.exists():
+        data = json.loads(pf.read_text())
+        if "_TAX_RATE" in data:
+            _tax_rate_id = data["_TAX_RATE"]
+            return _tax_rate_id
+    # Create new tax rate in Stripe
+    _check_key()
+    rate = stripe.TaxRate.create(
+        display_name="Texas Sales Tax",
+        percentage=TX_TAX_RATE,
+        inclusive=False,
+        jurisdiction="TX",
+        description="Texas combined state and local tax 8.25%",
+    )
+    _tax_rate_id = rate.id
+    if pf.exists():
+        data = json.loads(pf.read_text())
+        data["_TAX_RATE"] = _tax_rate_id
+        pf.write_text(json.dumps(data, indent=2))
+    return _tax_rate_id
 
 
 def _check_key():
@@ -94,6 +127,7 @@ def create_subscription(
         customer=customer_id,
         items=[{"price": price_id, "quantity": quantity}],
         trial_end=trial_end_ts,
+        default_tax_rates=[get_tax_rate_id()],
         **_collection_method(customer_id),
         metadata={"appointment_date": appointment_dt.date().isoformat()},
     )
@@ -135,6 +169,7 @@ def create_draft_invoice(
     invoice = stripe.Invoice.create(
         customer=customer_id,
         auto_advance=False,          # stays as draft until billing runner finalizes
+        default_tax_rates=[get_tax_rate_id()],
         **_collection_method(customer_id),
         description=f"GreenGuard service — {sku_label}",
         metadata={
@@ -155,15 +190,22 @@ def create_draft_invoice(
 
 # ── Daily billing runner ──────────────────────────────────────────────────────
 
-def process_due_invoices() -> list[dict]:
+def process_due_invoices(prices: dict, addons_config: dict) -> list[dict]:
     """
-    Find all draft invoices where billing_date <= today and finalize + send them.
+    Find all draft invoices where billing_date <= today, add any customer default
+    add-ons, apply tax, finalize and send.
     Called by the /billing/run endpoint daily at 6am CT.
-    Returns list of {invoice_id, customer_email, sku, billing_date} for each processed.
+
+    prices:        {SKU_CODE: stripe_price_id} from stripe_prices.json
+    addons_config: {email: [SKU_CODE, ...]} from customer_addons.json
     """
     _check_key()
-    today = datetime.now(timezone.utc).date().isoformat()
-    processed = []
+    today      = datetime.now(timezone.utc).date().isoformat()
+    tax_id     = get_tax_rate_id()
+    processed  = []
+
+    # Build email → customer_id lookup for add-on matching
+    email_to_id: dict[str, str] = {}
 
     for invoice in stripe.Invoice.list(status="draft", limit=100).auto_paging_iter():
         billing_date = (invoice.metadata or {}).get("billing_date", "")
@@ -171,20 +213,42 @@ def process_due_invoices() -> list[dict]:
             continue
 
         try:
+            customer_id = invoice.customer
+            # Resolve customer email for add-on lookup
+            if customer_id not in email_to_id:
+                cust = stripe.Customer.retrieve(customer_id)
+                email_to_id[customer_id] = (cust.email or "").lower()
+            email = email_to_id[customer_id]
+
+            # Add customer default add-ons
+            for addon_sku in addons_config.get(email, []):
+                addon_price_id = prices.get(addon_sku)
+                if addon_price_id:
+                    stripe.InvoiceItem.create(
+                        customer=customer_id,
+                        pricing={"price": addon_price_id},
+                        invoice=invoice.id,
+                    )
+
+            # Ensure tax rate is on the invoice
+            stripe.Invoice.modify(invoice.id, default_tax_rates=[tax_id])
+
             stripe.Invoice.finalize_invoice(invoice.id)
             stripe.Invoice.send_invoice(invoice.id)
+            inv = stripe.Invoice.retrieve(invoice.id)
             processed.append({
-                "invoice_id":     invoice.id,
-                "customer":       invoice.customer,
-                "sku":            (invoice.metadata or {}).get("sku", ""),
-                "billing_date":   billing_date,
-                "amount":         f"${invoice.amount_due / 100:.2f}",
+                "invoice_id":   invoice.id,
+                "customer":     customer_id,
+                "email":        email,
+                "sku":          (invoice.metadata or {}).get("sku", ""),
+                "billing_date": billing_date,
+                "amount":       f"${inv.amount_due / 100:.2f}",
             })
         except stripe.StripeError as e:
             processed.append({
-                "invoice_id":  invoice.id,
-                "customer":    invoice.customer,
-                "error":       str(e),
+                "invoice_id":   invoice.id,
+                "customer":     invoice.customer,
+                "error":        str(e),
                 "billing_date": billing_date,
             })
 

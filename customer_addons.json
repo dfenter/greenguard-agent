@@ -1,0 +1,6 @@
+{
+  "_comment": "Default add-ons auto-added to every invoice per customer. Keys are lowercase emails.",
+  "_example": {
+    "customer@example.com": ["BAIT", "TRAP-MAINT-BG"]
+  }
+}
