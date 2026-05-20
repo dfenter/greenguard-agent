@@ -104,7 +104,9 @@ def send_route_email(gmail_service, subject: str, html: str):
 
 def run(target_date: datetime | None = None):
     if target_date is None:
-        target_date = datetime.now(TZ).replace(hour=0, minute=0, second=0, microsecond=0)
+        # Default: tomorrow — script runs at midnight for the next day's route
+        today = datetime.now(TZ).replace(hour=0, minute=0, second=0, microsecond=0)
+        target_date = today + timedelta(days=1)
 
     day_start = target_date
     day_end   = target_date.replace(hour=23, minute=59, second=59)
