@@ -46,6 +46,9 @@ _CATALOG: dict[str, SKU] = {
     # One-time services
     "barrier-treatment":      SKU("BARRIER",  4999,  "one_time",  "GreenGuard Barrier Treatment"),
     "equipment-pickup":       SKU("PICKUP",   0,     "one_time",  "Equipment Pickup"),
+
+    # Tank rental — monthly CO₂ tank rental (no trap service), can also be one-off
+    "tank-rental":            SKU("TANK-RENT", 12499, "recurring", "CO₂ Tank Monthly Rental", billing_prompt=True),
 }
 
 
@@ -70,7 +73,7 @@ _ADDONS: dict[str, SKU] = {
     "TIMER-INSTALL": SKU("TIMER-INSTALL", 2999,  "one_time", "Timer Installation"),
     "NONCО2-UNIT":   SKU("NONCО2-UNIT",  7999,  "one_time", "Non-CO₂ Biogents Unit"),
     "WKD-SURCH":     SKU("WKD-SURCH",    2500,  "one_time", "Weekend Service Surcharge"),
-    "TANK-RENTAL":   SKU("TANK-RENTAL",  4999,  "one_time", "CO₂ Tank — Rental/Replacement"),
+    "TANK-RENTAL":   SKU("TANK-RENTAL",  12499, "one_time", "CO₂ Tank Monthly Rental (add-on)"),
 }
 
 

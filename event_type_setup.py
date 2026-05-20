@@ -69,6 +69,10 @@ EVENT_TYPES = [
     # Equipment pickup
     ("Equipment Pickup", "equipment-pickup", 30,
      "Scheduled pickup of GreenGuard equipment from your property.", 0),
+
+    # Tank rental
+    ("CO₂ Tank Monthly Rental", "tank-rental", 30,
+     "Monthly CO₂ tank rental service. Tank delivered and swapped each month.", 12499),
 ]
 
 

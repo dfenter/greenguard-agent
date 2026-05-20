@@ -220,15 +220,16 @@ def process_due_invoices(prices: dict, addons_config: dict) -> list[dict]:
                 email_to_id[customer_id] = (cust.email or "").lower()
             email = email_to_id[customer_id]
 
-            # Add customer default add-ons
-            for addon_sku in addons_config.get(email, []):
+            # Add customer default add-ons — format: {SKU: quantity}
+            for addon_sku, qty in addons_config.get(email, {}).items():
                 addon_price_id = prices.get(addon_sku)
-                if addon_price_id:
-                    stripe.InvoiceItem.create(
-                        customer=customer_id,
-                        pricing={"price": addon_price_id},
-                        invoice=invoice.id,
-                    )
+                if addon_price_id and qty > 0:
+                    for _ in range(qty):
+                        stripe.InvoiceItem.create(
+                            customer=customer_id,
+                            pricing={"price": addon_price_id},
+                            invoice=invoice.id,
+                        )
 
             # Ensure tax rate is on the invoice
             stripe.Invoice.modify(invoice.id, default_tax_rates=[tax_id])

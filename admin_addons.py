@@ -1,14 +1,15 @@
 """
 admin_addons.py — Manage per-customer default add-ons.
 
-Add-ons listed here are automatically added to every invoice for that customer
-when the daily billing run fires.
+Add-ons are auto-added to every invoice at billing time.
+Format in customer_addons.json: {"email": {"SKU": quantity}}
 
 Usage:
-    python3 admin_addons.py                          # list all
-    python3 admin_addons.py --email joe@x.com        # show one customer
-    python3 admin_addons.py --add --email joe@x.com --sku BAIT
+    python3 admin_addons.py                                   # list all
+    python3 admin_addons.py --email joe@x.com                 # show one customer
+    python3 admin_addons.py --add --email joe@x.com --sku BAIT --qty 2
     python3 admin_addons.py --remove --email joe@x.com --sku BAIT
+    python3 admin_addons.py --skus                            # list available SKUs
 """
 
 import json
@@ -40,31 +41,29 @@ def list_all():
         print("  No customer add-ons configured.")
         return
     print(f"\n  {'Email':<36} Add-ons")
-    print(f"  {'─'*56}")
-    for email, skus in sorted(data.items()):
-        labels = ", ".join(
-            ADDON_SKUS[s].label if s in ADDON_SKUS else s for s in skus
-        )
-        print(f"  {email:<36} {labels}")
+    print(f"  {'─'*62}")
+    for email, addons in sorted(data.items()):
+        parts = [f"{qty}× {s}" for s, qty in addons.items()]
+        print(f"  {email:<36} {', '.join(parts)}")
     print()
 
 
 def show(email: str):
     data  = _load()
     email = email.lower()
-    skus  = data.get(email, [])
-    if not skus:
+    addons = data.get(email, {})
+    if not addons:
         print(f"  No add-ons configured for {email}")
         return
     print(f"\n  Default add-ons for {email}:")
-    for s in skus:
+    for s, qty in addons.items():
         label = ADDON_SKUS[s].label if s in ADDON_SKUS else s
-        price = f"${ADDON_SKUS[s].price_cents/100:.2f}" if s in ADDON_SKUS else ""
-        print(f"    • {s:<16} {label}  {price}")
+        price = f"${ADDON_SKUS[s].price_cents/100:.2f} each" if s in ADDON_SKUS else ""
+        print(f"    • {qty}× {s:<14} {label}  {price}")
     print()
 
 
-def add(email: str, sku: str):
+def add(email: str, sku: str, qty: int = 1):
     sku   = sku.upper()
     email = email.lower()
     if sku not in ADDON_SKUS:
@@ -72,27 +71,24 @@ def add(email: str, sku: str):
         print(f"  Unknown SKU '{sku}'. Valid: {valid}")
         sys.exit(1)
     data = _load()
-    current = data.get(email, [])
-    if sku in current:
-        print(f"  {sku} already set for {email}")
-        return
-    current.append(sku)
-    data[email] = current
+    addons = data.get(email, {})
+    addons[sku] = qty
+    data[email] = addons
     _save(data)
-    print(f"  ✓ Added {sku} ({ADDON_SKUS[sku].label}) → {email}")
+    print(f"  ✓ Set {qty}× {sku} ({ADDON_SKUS[sku].label}) → {email}")
 
 
 def remove(email: str, sku: str):
     sku   = sku.upper()
     email = email.lower()
     data  = _load()
-    current = data.get(email, [])
-    if sku not in current:
+    addons = data.get(email, {})
+    if sku not in addons:
         print(f"  {sku} not found for {email}")
         return
-    current.remove(sku)
-    if current:
-        data[email] = current
+    del addons[sku]
+    if addons:
+        data[email] = addons
     else:
         data.pop(email, None)
     _save(data)
@@ -122,11 +118,17 @@ if __name__ == "__main__":
         if a == "--email" and i + 1 < len(args): email = args[i+1]
         if a == "--sku"   and i + 1 < len(args): sku   = args[i+1]
 
+    qty = 1
+    for i, a in enumerate(args):
+        if a == "--qty" and i + 1 < len(args):
+            try: qty = int(args[i+1])
+            except ValueError: pass
+
     if "--add" in args:
         if not email or not sku:
-            print("Usage: --add --email <email> --sku <SKU>")
+            print("Usage: --add --email <email> --sku <SKU> [--qty N]")
             sys.exit(1)
-        add(email, sku)
+        add(email, sku, qty)
     elif "--remove" in args:
         if not email or not sku:
             print("Usage: --remove --email <email> --sku <SKU>")

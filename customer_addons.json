@@ -1,6 +1,117 @@
 {
-  "_comment": "Default add-ons auto-added to every invoice per customer. Keys are lowercase emails.",
-  "_example": {
-    "customer@example.com": ["BAIT", "TRAP-MAINT-BG"]
+  "_comment": "Default add-ons auto-added to every invoice. Keys are lowercase emails. Format: {SKU: quantity}",
+  "prkalka@gmail.com": {
+    "BAIT": 1
+  },
+  "srl78704@gmail.com": {
+    "BAIT": 2
+  },
+  "kristinbrookshire@gmail.com": {
+    "BAIT": 2
+  },
+  "leyda.cordova@biogents.com": {
+    "BAIT": 1
+  },
+  "cpk_dc@protonmail.com": {
+    "BAIT": 2
+  },
+  "clmesser@me.com": {
+    "BAIT": 2
+  },
+  "michael.thib@gmail.com": {
+    "BAIT": 1
+  },
+  "pmosher@grandliving.com": {
+    "BAIT": 2
+  },
+  "harshad141@gmail.com": {
+    "BAIT": 1
+  },
+  "jesse@jnewland.com": {
+    "BAIT": 1
+  },
+  "jakecspencer@gmail.com": {
+    "BAIT": 1
+  },
+  "drurymorris@gmail.com": {
+    "BAIT": 2
+  },
+  "rajesh.nerlikar@gmail.com": {
+    "BAIT": 1
+  },
+  "dcase999@gmail.com": {
+    "BAIT": 1
+  },
+  "betny.townsend@gmail.com": {
+    "BAIT": 6
+  },
+  "justinvasquez@mac.com": {
+    "BAIT": 1
+  },
+  "ebony.zhu@gmail.com": {
+    "BAIT": 1
+  },
+  "chairstoryhair@gmail.com": {
+    "BAIT": 1
+  },
+  "johnjmattingly@gmail.com": {
+    "BAIT": 2
+  },
+  "ben.keast324@gmail.com": {
+    "BAIT": 1
+  },
+  "andrew@ltmr.io": {
+    "BAIT": 2
+  },
+  "mueller.brian.a@gmail.com": {
+    "BAIT": 1
+  },
+  "melanielown19@gmail.com": {
+    "BAIT": 1
+  },
+  "meburt02@gmail.com": {
+    "BAIT": 1
+  },
+  "pearsallpatrick1@gmail.com": {
+    "BAIT": 1
+  },
+  "dpcadis@gmail.com": {
+    "BAIT": 2
+  },
+  "fredlewcock@gmail.com": {
+    "BAIT": 2
+  },
+  "david@allison-firm.com": {
+    "BAIT": 4
+  },
+  "mlcmp@protonmail.com": {
+    "BAIT": 2
+  },
+  "ltsmith9@yahoo.com": {
+    "BAIT": 2
+  },
+  "filename.exe@gmail.com": {
+    "BAIT": 1
+  },
+  "anniejudice@gmail.com": {
+    "BAIT": 1
+  },
+  "keithyeungk@gmail.com": {
+    "BAIT": 1
+  },
+  "andrewjwilliamson@comcast.net": {
+    "BAIT": 1
+  },
+  "geraldjohnflynn@gmail.com": {
+    "BAIT": 1
+  },
+  "alaina@atxfs.com": {
+    "BAIT": 4
+  },
+  "chelstanciu@yahoo.com": {
+    "BAIT": 1
+  },
+  "kevosmith@gmail.com": {
+    "BAIT": 2
   }
 }
