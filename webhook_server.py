@@ -91,7 +91,7 @@ async def calcom_webhook(
 
     booking = payload.get("payload", {})
     uid     = booking.get("uid", "")
-    slug    = booking.get("eventTypeSlug") or booking.get("eventType", {}).get("slug", "")
+    slug    = booking.get("type") or booking.get("eventTypeSlug") or booking.get("eventType", {}).get("slug", "")
 
     # Attendee info
     attendees = booking.get("attendees", [])
