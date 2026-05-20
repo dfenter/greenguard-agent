@@ -152,7 +152,7 @@ async def calcom_webhook(
 
     elif sku.billing_type == "one_time" and sku.price_cents > 0:
         invoice_id = stripe_client.create_draft_invoice(
-            customer_id, price_id, sku.code, sku.label, appointment_dt,
+            customer_id, sku.price_cents, sku.code, sku.label, appointment_dt,
         )
         billing_date = (appointment_dt.date().__add__(__import__("datetime").timedelta(days=3))).isoformat()
         log.info(f"Draft invoice {invoice_id} for {email} — sends {billing_date}")

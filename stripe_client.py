@@ -153,13 +153,14 @@ def update_subscription_quantity(subscription_id: str, quantity: int) -> bool:
 
 def create_draft_invoice(
     customer_id: str,
-    price_id: str,
+    price_cents: int,
     sku_code: str,
     sku_label: str,
     appointment_dt: datetime,
 ) -> str:
     """
     Create a draft Stripe invoice with billing scheduled 3 days after appointment.
+    Uses price_cents directly so recurring vs one-time price type doesn't matter.
     Invoice stays in draft until the daily billing runner finalizes it.
     Returns invoice ID.
     """
@@ -168,7 +169,7 @@ def create_draft_invoice(
 
     invoice = stripe.Invoice.create(
         customer=customer_id,
-        auto_advance=False,          # stays as draft until billing runner finalizes
+        auto_advance=False,
         default_tax_rates=[get_tax_rate_id()],
         **_collection_method(customer_id),
         description=f"GreenGuard service — {sku_label}",
@@ -178,10 +179,10 @@ def create_draft_invoice(
             "appointment_date": appointment_dt.date().isoformat(),
         },
     )
-    # Attach the line item directly to this draft invoice
     stripe.InvoiceItem.create(
         customer=customer_id,
-        pricing={"price": price_id},
+        amount=price_cents,
+        currency="usd",
         invoice=invoice.id,
         description=sku_label,
     )
@@ -208,7 +209,8 @@ def process_due_invoices(prices: dict, addons_config: dict) -> list[dict]:
     email_to_id: dict[str, str] = {}
 
     for invoice in stripe.Invoice.list(status="draft", limit=100).auto_paging_iter():
-        billing_date = (invoice.metadata or {}).get("billing_date", "")
+        meta = {k: v for k, v in invoice.metadata.to_dict().items()} if invoice.metadata else {}
+        billing_date = meta.get("billing_date", "")
         if not billing_date or billing_date > today:
             continue
 
@@ -241,7 +243,7 @@ def process_due_invoices(prices: dict, addons_config: dict) -> list[dict]:
                 "invoice_id":   invoice.id,
                 "customer":     customer_id,
                 "email":        email,
-                "sku":          (invoice.metadata or {}).get("sku", ""),
+                "sku":          meta.get("sku", ""),
                 "billing_date": billing_date,
                 "amount":       f"${inv.amount_due / 100:.2f}",
             })

@@ -38,10 +38,14 @@ def get_existing_products() -> dict[str, str]:
 
 
 def get_existing_prices(product_id: str) -> list[dict]:
-    return [
-        {"id": p.id, "interval": p.recurring["interval"] if p.recurring else None}
-        for p in stripe.Price.list(product=product_id, active=True).data
-    ]
+    result = []
+    for p in stripe.Price.list(product=product_id, active=True).data:
+        try:
+            interval = p.recurring["interval"] if p.recurring else None
+        except Exception:
+            interval = None
+        result.append({"id": p.id, "interval": interval})
+    return result
 
 
 def main():

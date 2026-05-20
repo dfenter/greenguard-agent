@@ -243,7 +243,7 @@ def main():
 
     else:
         inv_id = stripe_client.create_draft_invoice(
-            customer_id, price_id, new_sku.code, new_sku.label, appointment_dt,
+            customer_id, new_sku.price_cents, new_sku.code, new_sku.label, appointment_dt,
         )
         print(f"  Created draft invoice {inv_id} — sends {billing_date}")
 
