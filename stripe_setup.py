@@ -24,28 +24,30 @@ stripe.api_key = os.getenv("STRIPE_SECRET_KEY", "")
 PRICES_FILE = Path(__file__).parent / "stripe_prices.json"
 
 
-def get_existing_products() -> dict[str, str]:
-    """Return {sku_code: product_id} for products already in Stripe."""
-    existing = {}
-    for product in stripe.Product.list(limit=100).auto_paging_iter():
-        try:
-            sku = product["metadata"]["sku"]
-        except (KeyError, TypeError):
-            sku = None
-        if sku:
-            existing[sku] = product.id
-    return existing
+def _sku_from_product(product) -> str | None:
+    try:
+        return product.metadata.to_dict().get("sku")
+    except Exception:
+        return None
 
 
-def get_existing_prices(product_id: str) -> list[dict]:
-    result = []
-    for p in stripe.Price.list(product=product_id, active=True).data:
-        try:
-            interval = p.recurring["interval"] if p.recurring else None
-        except Exception:
-            interval = None
-        result.append({"id": p.id, "interval": interval})
-    return result
+def find_existing_price(sku_code: str, needed_interval: str | None) -> str | None:
+    """
+    Search all products with this SKU and return a price_id that matches
+    the needed interval ('month' for recurring, None for one_time).
+    Returns None if no matching price found anywhere.
+    """
+    for product in stripe.Product.list(limit=100, active=True).auto_paging_iter():
+        if _sku_from_product(product) != sku_code:
+            continue
+        for price in stripe.Price.list(product=product.id, active=True).auto_paging_iter():
+            try:
+                interval = price.recurring.interval if price.recurring else None
+            except Exception:
+                interval = None
+            if interval == needed_interval:
+                return price.id
+    return None
 
 
 def main():
@@ -57,7 +59,6 @@ def main():
     print(f"\nStripe Setup — {mode} mode")
     print(f"{'='*50}\n")
 
-    existing_products = get_existing_products()
     prices_map: dict[str, str] = {}
 
     if PRICES_FILE.exists():
@@ -69,22 +70,15 @@ def main():
     created = skipped = failed = 0
 
     for sku in sku_engine.all_skus() + sku_engine.all_addons():
-        # Skip duplicates
-        if sku.code in existing_products:
-            product_id = existing_products[sku.code]
-            existing_prices = get_existing_prices(product_id)
-            needed_interval = "month" if sku.billing_type == "recurring" else None
+        needed_interval = "month" if sku.billing_type == "recurring" else None
 
-            # Check if a price with the correct interval exists
-            matching = [p for p in existing_prices if p["interval"] == needed_interval]
-            if matching:
-                prices_map[sku.code] = matching[0]["id"]
-                print(f"  SKIP  {sku.code:<14} {sku.label}")
-                skipped += 1
-                continue
-            else:
-                # Price type mismatch — create a new price with correct interval
-                print(f"  FIX   {sku.code:<14} creating {sku.billing_type} price …")
+        # Check if any existing product+price combo already matches
+        existing_price_id = find_existing_price(sku.code, needed_interval)
+        if existing_price_id:
+            prices_map[sku.code] = existing_price_id
+            print(f"  SKIP  {sku.code:<14} {sku.label}")
+            skipped += 1
+            continue
 
         try:
             # Create product
