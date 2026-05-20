@@ -185,7 +185,7 @@ def main():
         for _ in range(qty):
             stripe.InvoiceItem.create(
                 customer=customer_id,
-                price=price_id,
+                pricing={"price": price_id},
                 invoice=invoice_id,
                 description=sku.label,
             )

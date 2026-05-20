@@ -25,6 +25,7 @@ _CATALOG: dict[str, SKU] = {
     "tank-exchange-2":        SKU("TANK2",    13997, "recurring", "CO2 Tank Exchange — 2 Tanks",         billing_prompt=True),
     "tank-exchange-3":        SKU("TANK3",    18996, "recurring", "CO2 Tank Exchange — 3 Tanks",         billing_prompt=True),
     "tank-exchange-4":        SKU("TANK4",    23995, "recurring", "CO2 Tank Exchange — 4 Tanks",         billing_prompt=True),
+    "tank-exchange-6":        SKU("TANK6",    33993, "recurring", "CO2 Tank Exchange — 6 Tanks",         billing_prompt=True),
     "tank-exchange-10":       SKU("TANK10",   53989, "recurring", "CO2 Tank Exchange — 10 Tanks",        billing_prompt=True),
 
     # Biogents rentals — always recurring, no prompt

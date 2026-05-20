@@ -39,7 +39,7 @@ def get_existing_products() -> dict[str, str]:
 
 def get_existing_prices(product_id: str) -> list[dict]:
     return [
-        {"id": p.id, "type": p.recurring.interval if p.recurring else "one_time"}
+        {"id": p.id, "interval": p.recurring["interval"] if p.recurring else None}
         for p in stripe.Price.list(product=product_id, active=True).data
     ]
 
@@ -68,14 +68,19 @@ def main():
         # Skip duplicates
         if sku.code in existing_products:
             product_id = existing_products[sku.code]
-            # Make sure we have a price ID recorded
-            if sku.code not in prices_map:
-                prices = get_existing_prices(product_id)
-                if prices:
-                    prices_map[sku.code] = prices[0]["id"]
-            print(f"  SKIP  {sku.code:<14} {sku.label}")
-            skipped += 1
-            continue
+            existing_prices = get_existing_prices(product_id)
+            needed_interval = "month" if sku.billing_type == "recurring" else None
+
+            # Check if a price with the correct interval exists
+            matching = [p for p in existing_prices if p["interval"] == needed_interval]
+            if matching:
+                prices_map[sku.code] = matching[0]["id"]
+                print(f"  SKIP  {sku.code:<14} {sku.label}")
+                skipped += 1
+                continue
+            else:
+                # Price type mismatch — create a new price with correct interval
+                print(f"  FIX   {sku.code:<14} creating {sku.billing_type} price …")
 
         try:
             # Create product

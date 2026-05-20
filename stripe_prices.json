@@ -1,9 +1,9 @@
 {
-  "TANK1": "price_1TYxBTAxDNs2TttiF4pc0oT4",
-  "TANK2": "price_1TYxBUAxDNs2Ttti6ko04qCJ",
-  "TANK3": "price_1TYxBUAxDNs2TttilyizABrj",
-  "TANK4": "price_1TYxBVAxDNs2TttiRGK3kW8M",
-  "TANK10": "price_1TYxBWAxDNs2TttiGAfvgrzz",
+  "TANK1": "price_1TYzj5AxDNs2TttiGCRFYd2N",
+  "TANK2": "price_1TYzj6AxDNs2TttiJq522LeF",
+  "TANK3": "price_1TYzj7AxDNs2TttivvOqyaFh",
+  "TANK4": "price_1TYzj8AxDNs2TttiJbvlZcCb",
+  "TANK10": "price_1TYzj8AxDNs2TttitvzQztRc",
   "BG1": "price_1TYxBWAxDNs2TttiO0H0qJD6",
   "BG2": "price_1TYxBXAxDNs2Tttio7j45KJ0",
   "BG3": "price_1TYxBXAxDNs2TttiWzUVj4aY",
@@ -23,5 +23,7 @@
   "TIMER-INSTALL": "price_1TYytcAxDNs2Ttticjx357eM",
   "NONC\u041e2-UNIT": "price_1TYytcAxDNs2TttirGfaXmCz",
   "WKD-SURCH": "price_1TYytdAxDNs2TttiRS5slZam",
-  "TANK-RENTAL": "price_1TYytdAxDNs2Ttti9HCFlPxQ"
+  "TANK-RENTAL": "price_1TYytdAxDNs2Ttti9HCFlPxQ",
+  "TANK6": "price_1TYzgNAxDNs2TttivWmUueO0",
+  "PICKUP": "price_1TYzgOAxDNs2Ttti4BJhQSCs"
 }

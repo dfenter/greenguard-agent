@@ -146,7 +146,7 @@ def create_draft_invoice(
     # Attach the line item directly to this draft invoice
     stripe.InvoiceItem.create(
         customer=customer_id,
-        price=price_id,
+        pricing={"price": price_id},
         invoice=invoice.id,
         description=sku_label,
     )
