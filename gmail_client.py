@@ -14,20 +14,27 @@ SCOPES = [
     "https://www.googleapis.com/auth/gmail.compose",
     "https://www.googleapis.com/auth/gmail.modify",
     "https://www.googleapis.com/auth/gmail.settings.basic",
-    "https://www.googleapis.com/auth/calendar.readonly",
+    "https://www.googleapis.com/auth/calendar",          # full read/write for rescheduling
     "https://www.googleapis.com/auth/pubsub",
 ]
 
+_DIR = os.path.dirname(os.path.abspath(__file__))
+
 
 def authenticate(
-    credentials_path: str = "credentials.json",
-    token_path: str = "token.json",
+    credentials_path: str = None,
+    token_path: str = None,
 ) -> tuple:
     """Return (gmail_service, credentials).
 
-    Automatically re-authorizes if the stored token is missing any required scope
-    (e.g. after adding gmail.settings.basic for template access).
+    Automatically re-authorizes if the stored token is missing any required scope.
+    Paths default to the same directory as this file so the script works regardless
+    of which directory it is invoked from.
     """
+    if credentials_path is None:
+        credentials_path = os.path.join(_DIR, "credentials.json")
+    if token_path is None:
+        token_path = os.path.join(_DIR, "token.json")
     creds = None
     if os.path.exists(token_path):
         creds = Credentials.from_authorized_user_file(token_path, SCOPES)
