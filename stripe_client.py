@@ -44,6 +44,23 @@ def get_or_create_customer(name: str, email: str, phone: str | None = None) -> s
     return find_customer(email) or create_customer(name, email, phone)
 
 
+def has_payment_method(customer_id: str) -> bool:
+    """Return True if customer has a saved payment method (card) in Stripe."""
+    _check_key()
+    methods = stripe.PaymentMethod.list(customer=customer_id, type="card", limit=1)
+    return bool(methods.data)
+
+
+def _collection_method(customer_id: str) -> dict:
+    """
+    Return the right Stripe billing params based on whether the customer
+    has a saved card. Existing customers auto-charge; new ones get an invoice email.
+    """
+    if has_payment_method(customer_id):
+        return {"collection_method": "charge_automatically"}
+    return {"collection_method": "send_invoice", "days_until_due": 14}
+
+
 # ── Subscriptions (recurring billing) ────────────────────────────────────────
 
 def get_active_subscription(customer_id: str) -> dict | None:
@@ -77,8 +94,7 @@ def create_subscription(
         customer=customer_id,
         items=[{"price": price_id, "quantity": quantity}],
         trial_end=trial_end_ts,
-        collection_method="send_invoice",
-        days_until_due=14,
+        **_collection_method(customer_id),
         metadata={"appointment_date": appointment_dt.date().isoformat()},
     )
     return sub.id
@@ -118,9 +134,8 @@ def create_draft_invoice(
 
     invoice = stripe.Invoice.create(
         customer=customer_id,
-        auto_advance=False,          # stays as draft until we explicitly finalize
-        collection_method="send_invoice",
-        days_until_due=14,
+        auto_advance=False,          # stays as draft until billing runner finalizes
+        **_collection_method(customer_id),
         description=f"GreenGuard service — {sku_label}",
         metadata={
             "billing_date": billing_date,
