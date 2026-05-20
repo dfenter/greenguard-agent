@@ -165,20 +165,19 @@ def main():
         print(f"  Error: no Stripe price ID for {new_sku.code}")
         sys.exit(1)
 
-    # Billing type — let admin choose regardless of SKU default
-    if new_sku.price_cents > 0:
-        default_billing = new_sku.billing_type
-        default_label   = "recurring" if default_billing == "recurring" else "one-time"
-        print(f"\n  Default billing for this service: {default_label}")
-        choice = input("  Billing type — (r)ecurring monthly or (o)ne-time invoice? [Enter to keep default]: ").strip().lower()
+    # Billing type — prompt only for services where it can vary
+    if new_sku.price_cents > 0 and new_sku.billing_prompt:
+        default_label = "recurring" if new_sku.billing_type == "recurring" else "one-time"
+        print(f"\n  Default billing: {default_label}")
+        choice = input("  (r)ecurring monthly or (o)ne-time invoice? [Enter to keep default]: ").strip().lower()
         if choice.startswith("r"):
             billing_type = "recurring"
         elif choice.startswith("o"):
             billing_type = "one_time"
         else:
-            billing_type = default_billing
+            billing_type = new_sku.billing_type
     else:
-        billing_type = "one_time"
+        billing_type = new_sku.billing_type
 
     # Quantity — only relevant for recurring
     quantity = 1
