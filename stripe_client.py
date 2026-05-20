@@ -57,9 +57,15 @@ def get_active_subscription(customer_id: str) -> dict | None:
     return None
 
 
-def create_subscription(customer_id: str, price_id: str, appointment_dt: datetime) -> str:
+def create_subscription(
+    customer_id: str,
+    price_id: str,
+    appointment_dt: datetime,
+    quantity: int = 1,
+) -> str:
     """
     Create a monthly subscription with a trial ending 3 days after the appointment.
+    quantity > 1 handles multiple units (e.g. 2 Mosqitter rentals = quantity=2).
     Stripe auto-charges on trial_end and monthly thereafter.
     Returns subscription ID.
     """
@@ -69,13 +75,28 @@ def create_subscription(customer_id: str, price_id: str, appointment_dt: datetim
 
     sub = stripe.Subscription.create(
         customer=customer_id,
-        items=[{"price": price_id}],
+        items=[{"price": price_id, "quantity": quantity}],
         trial_end=trial_end_ts,
         collection_method="send_invoice",
         days_until_due=14,
         metadata={"appointment_date": appointment_dt.date().isoformat()},
     )
     return sub.id
+
+
+def update_subscription_quantity(subscription_id: str, quantity: int) -> bool:
+    """Update the unit quantity on an existing subscription (e.g. add a second Mosqitter)."""
+    _check_key()
+    try:
+        sub = stripe.Subscription.retrieve(subscription_id)
+        item_id = sub["items"].data[0].id
+        stripe.Subscription.modify(
+            subscription_id,
+            items=[{"id": item_id, "quantity": quantity}],
+        )
+        return True
+    except stripe.StripeError:
+        return False
 
 
 # ── One-time invoices ─────────────────────────────────────────────────────────
