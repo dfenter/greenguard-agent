@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: greenguard-webhook
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn webhook_server:app --host 0.0.0.0 --port $PORT
+    plan: free
+    envVars:
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: CALCOM_API_KEY
+        sync: false
+      - key: CALCOM_WEBHOOK_SECRET
+        sync: false
+      - key: CALENDAR_TIMEZONE
+        value: America/Chicago
