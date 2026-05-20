@@ -1,9 +1,9 @@
 {
-  "TANK1": "price_1TZ0A0AxDNs2TttijCPIaH3s",
-  "TANK2": "price_1TZ0A1AxDNs2TttislFYRMIu",
-  "TANK3": "price_1TZ0A1AxDNs2Tttie2zl6nOH",
-  "TANK4": "price_1TZ0A2AxDNs2TttisdgP8RAk",
-  "TANK10": "price_1TZ0A3AxDNs2TttiFrBQNzPp",
+  "TANK1": "price_1TZ1ClAxDNs2Ttti54Z3bSkH",
+  "TANK2": "price_1TZ1CmAxDNs2TttiU3FHUH1L",
+  "TANK3": "price_1TZ1CnAxDNs2TttifNbWhbWf",
+  "TANK4": "price_1TZ1CoAxDNs2Tttifa2fURtA",
+  "TANK10": "price_1TZ1CpAxDNs2TttiBJ5NNi4p",
   "BG1": "price_1TYxBWAxDNs2TttiO0H0qJD6",
   "BG2": "price_1TYxBXAxDNs2Tttio7j45KJ0",
   "BG3": "price_1TYxBXAxDNs2TttiWzUVj4aY",
@@ -27,5 +27,6 @@
   "TANK6": "price_1TYzgNAxDNs2TttivWmUueO0",
   "PICKUP": "price_1TYzgOAxDNs2Ttti4BJhQSCs",
   "_TAX_RATE": "txr_1TZ03sAxDNs2TttikXkUUuEV",
-  "TANK-RENT": "price_1TZ0A6AxDNs2Ttti7GfhAl7N"
+  "TANK-RENT": "price_1TZ0A6AxDNs2Ttti7GfhAl7N",
+  "NONC\u041e2-RENT": "price_1TZ1CtAxDNs2TttioFKTIma8"
 }

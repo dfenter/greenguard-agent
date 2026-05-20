@@ -1,5 +1,8 @@
 {
   "_comment": "Default add-ons auto-added to every invoice. Keys are lowercase emails. Format: {SKU: quantity}",
+  "amywpatton@gmail.com": {
+    "NONCО2-RENT": 1
+  },
   "prkalka@gmail.com": {
     "BAIT": 1
   },

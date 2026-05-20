@@ -74,6 +74,7 @@ _ADDONS: dict[str, SKU] = {
     "NONCО2-UNIT":   SKU("NONCО2-UNIT",  7999,  "one_time", "Non-CO₂ Biogents Unit"),
     "WKD-SURCH":     SKU("WKD-SURCH",    2500,  "one_time", "Weekend Service Surcharge"),
     "TANK-RENTAL":   SKU("TANK-RENTAL",  12499, "one_time", "CO₂ Tank Monthly Rental (add-on)"),
+    "NONCО2-RENT":   SKU("NONCО2-RENT",  4000,  "recurring", "Non-CO₂ Biogents Trap Rental (per trap/mo)"),
 }
 
 
