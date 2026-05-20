@@ -219,19 +219,36 @@ def _extract_email(desc: str) -> str | None:
     return m.group(1).strip() if m else None
 
 
+def _valid_address(s: str) -> bool:
+    """Return True if string looks like a street address (has digit, no URL)."""
+    return bool(s) and bool(re.search(r"\d", s)) and "http" not in s and "Change Appointment" not in s
+
+
 def extract_address(event: dict) -> str | None:
     desc = event.get("description", "") or ""
+
+    # 1. Acuity Address section
     m = re.search(
         r"Address\n={4,}\nPlease enter the address for the service to be performed::\s*(.+?)(?:\n\n|\Z)",
         desc, re.DOTALL,
     )
     if m:
-        addr = m.group(1).strip()
-        if addr and re.search(r"\d", addr):
+        addr = m.group(1).strip().splitlines()[0].strip()
+        if _valid_address(addr):
             return addr
+
+    # 2. location field
     loc = (event.get("location") or "").strip()
-    if loc and re.search(r"\d", loc):
+    if _valid_address(loc):
         return loc
+
+    # 3. First line of Notes that looks like an address
+    notes_m = re.search(r"Notes:\s*\n(.+)", desc)
+    if notes_m:
+        first_note_line = notes_m.group(1).strip().splitlines()[0].strip()
+        if _valid_address(first_note_line):
+            return first_note_line
+
     return None
 
 def extract_notes(event: dict) -> str | None:
