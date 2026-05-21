@@ -20,7 +20,7 @@ def _strip_html(text: str) -> str:
 
 def get_all_templates(service) -> dict[str, str]:
     """Return {template_name: plain_text_body} for every Gmail canned response."""
-    listing = service.users().settings().canned_messages().list(userId="me").execute()
+    listing = service.users().settings().cannedMessages().list(userId="me").execute()
     templates: dict[str, str] = {}
 
     for entry in listing.get("canned_messages", []):
@@ -30,7 +30,7 @@ def get_all_templates(service) -> dict[str, str]:
             detail = (
                 service.users()
                 .settings()
-                .canned_messages()
+                .cannedMessages()
                 .get(userId="me", id=tmpl_id)
                 .execute()
             )
