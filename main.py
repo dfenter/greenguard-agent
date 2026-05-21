@@ -243,23 +243,19 @@ def process_email(
 
     log.info("Processing id=%s subject=%r from=%s", email_id, subject, sender)
 
-    # Item 1 — spam filter: skip auto-replies, OOO, delivery notices before touching Claude
-    if is_spam(sender, subject, email["body"]):
-        log.info("  → Spam/auto-reply — skipped")
+    # Only process property assessment booking notifications — skip everything else
+    if not is_appointment_notification(subject):
+        log.info("  → Not an appointment notification — skipped")
         mark_processed(gmail_service, email_id, [processed_label_id])
         return
 
-    # Item 5 — crash-safety: skip if already recorded in SQLite
+    # Crash-safety: skip if already recorded in SQLite
     if db.is_processed(email_id):
         log.info("  → Already processed (DB record found) — skipping")
         mark_processed(gmail_service, email_id, [processed_label_id])
         return
 
-    # Cal.com / Acuity appointment notification → property assessment draft
-    if is_appointment_notification(subject):
-        draft = _draft_assessment(gmail_service, subject, email["body"])
-    else:
-        draft = _draft_standard(gmail_service, calendar_service, email)
+    draft = _draft_assessment(gmail_service, subject, email["body"])
 
     log.info(
         "  → classification=%s  urgency=%s  missing=%s",
