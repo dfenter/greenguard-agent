@@ -8,3 +8,4 @@ google-cloud-pubsub>=2.21.0
 stripe>=10.0.0
 fastapi>=0.115.0
 uvicorn>=0.30.0
+python-multipart>=0.0.9
