@@ -195,8 +195,8 @@ def _draft_assessment(gmail_service, subject: str, body: str) -> EmailDraft:
     prop = lookup_property(appt.service_address, GOOGLE_MAPS_API_KEY)
     templates = _get_templates(gmail_service)
 
-    template_name, risk_level = select_template(appt, prop, templates)
-    log.info("  → Template selected: %r  risk=%s", template_name, risk_level)
+    template_name, lot_size, risk_level = select_template(appt, prop, templates)
+    log.info("  → Template: %r  lot=%s  risk=%s", template_name, lot_size, risk_level)
 
     template_body = templates.get(template_name, "")
 

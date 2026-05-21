@@ -343,23 +343,30 @@ PRE-OUTPUT CHECKLIST
 
 
 _SELECT_SYSTEM = """You assess residential properties in Austin, TX for Greenguard USA's CO2 mosquito control service.
-Look at the Street View image (if provided) and select the best-matching email template.
+You will receive up to two images: a satellite/aerial view (for lot size) and a Street View (for vegetation and risk factors).
 
-RISK CRITERIA:
-HIGH — creek/pond/drainage/water adjacent, dense mature tree canopy, large lot (0.5+ ac), greenbelt/park adjacent, rural
-MODERATE — typical suburban lot, mature trees, normal drainage, 0.1–0.5 acres
-LOW — small urban lot, minimal vegetation, open/sunny, xeriscape, new construction, townhome/condo
+STEP 1 — Estimate lot size from the satellite image:
+  Small   < 0.1 ac  — townhome or small urban lot, tight between neighbors
+  Medium  0.1–0.5 ac — typical suburban lot, visible side yards
+  Large   0.5–1 ac  — substantial setback, wide lot, outbuildings possible
+  Estate  1+ ac     — long driveway, significant acreage or pasture visible
 
-Pick the template name that best fits the property risk level and type.
-If no templates match or none are available, return "none"."""
+STEP 2 — Assess risk from both images:
+  HIGH — water/creek/pond adjacent, dense mature tree canopy, large/estate lot, greenbelt adjacent, rural
+  MODERATE — typical suburban, mature trees, normal drainage, medium lot
+  LOW — small urban lot, open/sunny, minimal vegetation, xeriscape, new construction
+
+STEP 3 — Pick the template that best matches the lot size and risk level.
+Return "none" if no template fits."""
 
 _SELECT_SCHEMA = {
     "type": "object",
     "properties": {
-        "template_name": {"type": "string"},
+        "lot_size": {"type": "string", "enum": ["small", "medium", "large", "estate"]},
         "risk_level": {"type": "string", "enum": ["high", "moderate", "low"]},
+        "template_name": {"type": "string"},
     },
-    "required": ["template_name", "risk_level"],
+    "required": ["lot_size", "risk_level", "template_name"],
     "additionalProperties": False,
 }
 
@@ -368,10 +375,11 @@ def select_template(
     appt: AppointmentInfo,
     prop: PropertyInfo,
     templates: dict[str, str],
-) -> tuple[str, str]:
-    """Return (template_name, risk_level). Uses Street View to pick best template."""
+) -> tuple[str, str, str]:
+    """Return (template_name, lot_size, risk_level).
+    Sends satellite image first (lot size), then Street View (risk factors)."""
     if not templates:
-        return "none", "moderate"
+        return "none", "medium", "moderate"
 
     template_list = "\n".join(f'- "{name}"' for name in templates)
     context = (
@@ -382,19 +390,25 @@ def select_template(
     )
 
     content: list[dict] = []
+
+    if prop.satellite_jpeg:
+        img_b64 = base64.standard_b64encode(prop.satellite_jpeg).decode()
+        content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": img_b64}})
+        content.append({"type": "text", "text": "Satellite/aerial view above (use for lot size).\n"})
+
     if prop.street_view_jpeg:
         img_b64 = base64.standard_b64encode(prop.street_view_jpeg).decode()
-        content.append({
-            "type": "image",
-            "source": {"type": "base64", "media_type": "image/jpeg", "data": img_b64},
-        })
-        content.append({"type": "text", "text": "Street View above.\n\n" + context})
+        content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": img_b64}})
+        content.append({"type": "text", "text": "Street View above (use for vegetation and risk).\n\n" + context})
     else:
-        content.append({"type": "text", "text": "(No Street View.)\n\n" + context})
+        content.append({"type": "text", "text": context})
+
+    if not content:
+        return "none", "medium", "moderate"
 
     response = _client.messages.create(
         model="claude-haiku-4-5",
-        max_tokens=60,
+        max_tokens=80,
         output_config={"format": {"type": "json_schema", "schema": _SELECT_SCHEMA}},
         system=_SELECT_SYSTEM,
         messages=[{"role": "user", "content": content}],
@@ -404,6 +418,6 @@ def select_template(
         if block.type == "text":
             log_usage("claude-haiku-4-5", response.usage, label=prop.formatted_address[:50])
             data = json.loads(block.text)
-            return data["template_name"], data["risk_level"]
+            return data["template_name"], data["lot_size"], data["risk_level"]
 
-    return "none", "moderate"
+    return "none", "medium", "moderate"
