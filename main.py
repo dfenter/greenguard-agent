@@ -15,6 +15,7 @@ Install as a background service (auto-starts on login, restarts on crash):
 """
 
 import os
+import re
 import time
 import logging
 from dotenv import load_dotenv
@@ -23,13 +24,12 @@ from gmail_client import (
     authenticate,
     get_or_create_label,
     get_unread_emails,
-    get_thread_context,
     create_draft_reply,
     mark_processed,
     send_email,
 )
-from calendar_client import get_calendar_service, get_available_slots, get_route_distances
-from agent import analyze_and_draft, looks_like_scheduling, assess_appointment
+from calendar_client import get_calendar_service, get_route_distances
+from agent import select_template, EmailDraft
 from appointment_parser import parse_appointment_email, is_appointment_notification
 from address_lookup import lookup_property
 from template_loader import get_all_templates
@@ -170,8 +170,8 @@ def _get_templates(gmail_service) -> dict[str, str]:
     return _templates_cache
 
 
-def _draft_assessment(gmail_service, subject: str, body: str):
-    """Parse a Cal.com booking, geocode address, run Sonnet Vision assessment."""
+def _draft_assessment(gmail_service, subject: str, body: str) -> EmailDraft:
+    """Parse Cal.com booking → geocode → pick Gmail template → build draft."""
     appt = parse_appointment_email(subject, body)
     log.info(
         "  → Appointment: %s | %s | addr=%r",
@@ -179,8 +179,6 @@ def _draft_assessment(gmail_service, subject: str, body: str):
     )
 
     if not appt.service_address:
-        log.warning("  → No address found in appointment email — falling back to standard draft")
-        from agent import EmailDraft
         return EmailDraft(
             classification="appointment_notification",
             urgency="medium",
@@ -189,42 +187,65 @@ def _draft_assessment(gmail_service, subject: str, body: str):
             draft_body=(
                 f"Hi {appt.customer_name or 'there'},\n\n"
                 "Thank you for booking a Free Property Assessment with Greenguard USA! "
-                "We noticed your service address wasn't included in the booking — "
-                "could you reply with the address so we can prepare for your visit?\n\n"
+                "Could you reply with your service address so we can prepare for your visit?\n\n"
                 "Best regards,\nGreenguard USA Customer Service\nadmin@greenguard-usa.com"
             ),
         )
 
     prop = lookup_property(appt.service_address, GOOGLE_MAPS_API_KEY)
     templates = _get_templates(gmail_service)
-    return assess_appointment(appt, prop, templates)
 
+    template_name, risk_level = select_template(appt, prop, templates)
+    log.info("  → Template selected: %r  risk=%s", template_name, risk_level)
 
-def _draft_standard(gmail_service, calendar_service, email: dict):
-    """Standard email → Haiku draft with optional calendar slots."""
-    subject = email["subject"]
-    body = email["body"]
+    template_body = templates.get(template_name, "")
 
-    thread_history = get_thread_context(
-        gmail_service, email["thread_id"], email["id"], limit=2
+    if template_body:
+        draft_body = _personalize(template_body, appt)
+    else:
+        # No matching template — use a plain confirmation
+        first = appt.customer_name.split()[0] if appt.customer_name else "there"
+        draft_body = (
+            f"Hi {first},\n\n"
+            "Thank you for booking a Free Property Assessment with Greenguard USA! "
+            "We're looking forward to visiting your property"
+            + (f" on {appt.service_date}" if appt.service_date else "")
+            + ". Our team will be in touch to confirm the details.\n\n"
+            "Best regards,\nGreenguard USA Customer Service\nadmin@greenguard-usa.com"
+        )
+
+    draft_subject = (
+        f"Your Free Property Assessment"
+        + (f" – {appt.service_date}" if appt.service_date else "")
     )
-    if thread_history:
-        log.info("  → Thread context: %d prior message(s)", len(thread_history))
 
-    slots: list[str] = []
-    if calendar_service and looks_like_scheduling(subject, body):
-        try:
-            slots = _get_slots(calendar_service)
-        except Exception as exc:
-            log.warning("  → Could not fetch calendar slots: %s", exc)
-
-    return analyze_and_draft(
-        email_from=email["from"],
-        email_subject=subject,
-        email_body=body,
-        available_slots=slots or None,
-        thread_history=thread_history or None,
+    return EmailDraft(
+        classification="appointment_notification",
+        urgency="medium",
+        missing_info=[],
+        draft_subject=draft_subject,
+        draft_body=draft_body,
     )
+
+
+def _personalize(template_body: str, appt: AppointmentInfo) -> str:
+    """Insert customer first name and date into a template if placeholders exist,
+    otherwise prepend a greeting line."""
+    first = appt.customer_name.split()[0] if appt.customer_name else "there"
+    body = template_body
+
+    # Replace common placeholder patterns
+    body = re.sub(r"\[(?:Customer\s*)?Name\]", first, body, flags=re.IGNORECASE)
+    body = re.sub(r"\[(?:Appointment\s*)?Date\]", appt.service_date or "your upcoming appointment", body, flags=re.IGNORECASE)
+    body = re.sub(r"\[(?:Service\s*)?Address\]", appt.service_address or "", body, flags=re.IGNORECASE)
+
+    # If no greeting line found, prepend one
+    if not re.match(r"^(hi|hello|dear)\b", body.strip(), re.IGNORECASE):
+        body = f"Hi {first},\n\n{body}"
+
+    return body
+
+
 
 
 # ---------------------------------------------------------------------------

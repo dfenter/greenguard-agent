@@ -342,39 +342,43 @@ PRE-OUTPUT CHECKLIST
   □ No mention of Street View, AI, or automated systems"""
 
 
-_DRAFT_SCHEMA = {
+_SELECT_SYSTEM = """You assess residential properties in Austin, TX for Greenguard USA's CO2 mosquito control service.
+Look at the Street View image (if provided) and select the best-matching email template.
+
+RISK CRITERIA:
+HIGH — creek/pond/drainage/water adjacent, dense mature tree canopy, large lot (0.5+ ac), greenbelt/park adjacent, rural
+MODERATE — typical suburban lot, mature trees, normal drainage, 0.1–0.5 acres
+LOW — small urban lot, minimal vegetation, open/sunny, xeriscape, new construction, townhome/condo
+
+Pick the template name that best fits the property risk level and type.
+If no templates match or none are available, return "none"."""
+
+_SELECT_SCHEMA = {
     "type": "object",
     "properties": {
-        "classification": {"type": "string", "enum": ["appointment_notification"]},
-        "urgency": {"type": "string", "enum": ["high", "medium", "low"]},
-        "missing_info": {"type": "array", "items": {"type": "string"}},
-        "draft_subject": {"type": "string"},
-        "draft_body": {"type": "string"},
+        "template_name": {"type": "string"},
+        "risk_level": {"type": "string", "enum": ["high", "moderate", "low"]},
     },
-    "required": ["classification", "urgency", "missing_info", "draft_subject", "draft_body"],
+    "required": ["template_name", "risk_level"],
     "additionalProperties": False,
 }
 
 
-def assess_appointment(
+def select_template(
     appt: AppointmentInfo,
     prop: PropertyInfo,
     templates: dict[str, str],
-) -> EmailDraft:
-    # Build compact template menu — 200 chars each is enough to pick the right one
-    if templates:
-        template_section = "TEMPLATES (pick best fit):\n"
-        for name, body in templates.items():
-            preview = body[:200].replace("\n", " ")
-            template_section += f'"{name}": {preview}…\n'
-    else:
-        template_section = "No templates — write from scratch."
+) -> tuple[str, str]:
+    """Return (template_name, risk_level). Uses Street View to pick best template."""
+    if not templates:
+        return "none", "moderate"
 
+    template_list = "\n".join(f'- "{name}"' for name in templates)
     context = (
-        f"Customer: {appt.customer_name} | Date: {appt.service_date}\n"
         f"Address: {prop.formatted_address}\n"
+        f"Customer: {appt.customer_name} | Date: {appt.service_date}\n"
         f"Notes: {appt.customer_notes or 'none'}\n\n"
-        f"{template_section}"
+        f"Available templates:\n{template_list}"
     )
 
     content: list[dict] = []
@@ -388,26 +392,18 @@ def assess_appointment(
     else:
         content.append({"type": "text", "text": "(No Street View.)\n\n" + context})
 
-    # System prompt is ~2300 tokens — above Sonnet 4.6's 2048-token cache threshold.
-    # cache_control caches it so repeated appointment calls pay 0.1× on the system prompt.
     response = _client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=1500,
-        output_config={"effort": "medium", "format": {"type": "json_schema", "schema": _DRAFT_SCHEMA}},
-        system=[{"type": "text", "text": _ASSESSMENT_SYSTEM, "cache_control": {"type": "ephemeral"}}],
+        model="claude-haiku-4-5",
+        max_tokens=60,
+        output_config={"format": {"type": "json_schema", "schema": _SELECT_SCHEMA}},
+        system=_SELECT_SYSTEM,
         messages=[{"role": "user", "content": content}],
     )
 
     for block in response.content:
         if block.type == "text":
-            log_usage("claude-sonnet-4-6", response.usage, label=prop.formatted_address[:50])
+            log_usage("claude-haiku-4-5", response.usage, label=prop.formatted_address[:50])
             data = json.loads(block.text)
-            return EmailDraft(
-                classification=data["classification"],
-                urgency=data["urgency"],
-                missing_info=data["missing_info"],
-                draft_subject=data["draft_subject"],
-                draft_body=data["draft_body"],
-            )
+            return data["template_name"], data["risk_level"]
 
-    raise ValueError("No text block in Claude response for appointment assessment")
+    return "none", "moderate"
