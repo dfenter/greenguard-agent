@@ -27,63 +27,124 @@ load_dotenv()
 
 TZ         = ZoneInfo(os.getenv("CALENDAR_TIMEZONE", "America/Chicago"))
 ROUTE_TO   = os.getenv("ROUTE_EMAIL", "admin@greenguard-usa.com")
+ROUTE_CC   = ["bodhiyoga@gmail.com"]
 
 
 def _build_email(day_label: str, stops: list[dict], day_d: float, day_m: int,
                  day_tanks: int, maps_link: str) -> tuple[str, str]:
     """Return (subject, html_body)."""
-    subject = f"GreenGuard Routes — {day_label}  |  {len(stops)} stops  |  {day_d} mi"
+    tank_label = f'{day_tanks} {"Tank" if day_tanks == 1 else "Tanks"}'
+    subject = f"GreenGuard Route — {day_label}  |  {len(stops)} stops  |  {day_d} mi"
     if day_tanks:
-        subject += f"  |  {day_tanks} tanks"
+        subject += f"  |  {tank_label}"
 
     rows = ""
     for i, s in enumerate(stops, 1):
-        tanks_badge = f' <span style="color:#c9a84c;font-weight:700">[{s["tanks"]}T]</span>' if s.get("tanks") else ""
-        note = f'<br><span style="color:#888;font-size:12px">Note: {s["notes"]}</span>' if s.get("notes") else ""
+        is_last  = i == len(stops)
+        border   = "" if is_last else "border-bottom:1px solid rgba(122,171,130,0.1);"
+        _t       = s.get("tanks", 0)
+        _tlabel  = f'{_t} {"Tank" if _t == 1 else "Tanks"}'
+        tank_td  = (
+            f'<td style="padding:16px 20px 16px 0;{border}vertical-align:middle;'
+            f'white-space:nowrap;text-align:right">'
+            f'<span style="background:rgba(201,168,76,0.12);border:1px solid rgba(201,168,76,0.4);'
+            f'border-radius:4px;padding:4px 10px;color:#c9a84c;font-size:11px;font-weight:800;'
+            f'letter-spacing:0.06em;text-transform:uppercase">{_tlabel}</span></td>'
+            if _t else f'<td style="padding:16px 8px 16px 0;{border}"></td>'
+        )
+        note = (
+            f'<div style="color:#7aab82;font-size:11px;margin-top:5px;'
+            f'font-style:italic;line-height:1.5">{s["notes"]}</div>'
+            if s.get("notes") else ""
+        )
         rows += f"""
         <tr>
-          <td style="padding:10px 8px;border-bottom:1px solid #2d4a32;color:#c9a84c;font-weight:700;width:24px">{i}</td>
-          <td style="padding:10px 8px;border-bottom:1px solid #2d4a32">
-            <strong style="color:#fff">{s["name"]}</strong>{tanks_badge}
-            <span style="color:#7aab82;margin-left:8px">{s["sched"]}</span>
-            <br><span style="color:#a8edc0;font-size:13px">{s["address"]}</span>
+          <td style="padding:16px 8px 16px 20px;{border}vertical-align:middle;width:32px">
+            <div style="width:26px;height:26px;line-height:26px;text-align:center;
+                        background:rgba(201,168,76,0.15);border:1px solid rgba(201,168,76,0.3);
+                        border-radius:6px;color:#c9a84c;font-size:12px;font-weight:900">{i}</div>
+          </td>
+          <td style="padding:16px 12px;{border}vertical-align:middle">
+            <div style="color:#ffffff;font-weight:800;font-size:15px;letter-spacing:-0.02em;line-height:1.2">{s["name"]}</div>
+            {"<div style='color:#c9a84c;font-size:11px;font-weight:700;margin-top:2px;letter-spacing:0.02em'>" + s["service"] + "</div>" if s.get("service") else ""}
+            <div style="color:#7aab82;font-size:12px;font-weight:700;margin-top:3px;letter-spacing:0.01em">{s["sched"]} &nbsp;&middot;&nbsp; {s["drive"]}</div>
+            <div style="color:rgba(212,230,202,0.45);font-size:12px;margin-top:2px">{s["address"]}</div>
             {note}
           </td>
-          <td style="padding:10px 8px;border-bottom:1px solid #2d4a32;color:#d4e6ca;font-size:13px;white-space:nowrap">{s["drive"]}</td>
+          {tank_td}
         </tr>"""
 
-    tank_line = f"&nbsp;&nbsp;·&nbsp;&nbsp;<strong>{day_tanks} tanks</strong>" if day_tanks else ""
+    tank_pill = (
+        f'<td style="padding:0 0 0 8px">'
+        f'<span style="background:rgba(201,168,76,0.12);border:1px solid rgba(201,168,76,0.45);'
+        f'border-radius:4px;padding:5px 12px;color:#c9a84c;font-size:11px;font-weight:800;'
+        f'letter-spacing:0.06em;text-transform:uppercase;display:inline-block">{tank_label}</span></td>'
+        if day_tanks else ""
+    )
 
     html = f"""<!DOCTYPE html>
-<html>
-<body style="margin:0;padding:0;background:#0d1a10;font-family:'Helvetica Neue',Arial,sans-serif">
-<div style="max-width:600px;margin:0 auto;padding:24px 16px">
+<html lang="en">
+<head>
+<meta name="color-scheme" content="dark">
+<meta name="supported-color-schemes" content="dark">
+<link href="https://fonts.googleapis.com/css2?family=Nunito+Sans:wght@400;600;700;800;900&display=swap" rel="stylesheet">
+<style>
+:root {{ color-scheme: dark; }}
+body {{ background-color: #0a1a0d !important; color: #d4e6ca !important; }}
+* {{ -webkit-text-size-adjust: none; }}
+</style>
+</head>
+<body style="margin:0;padding:0;background:#0a1a0d;font-family:'Nunito Sans','Helvetica Neue',Arial,sans-serif;color:#d4e6ca">
+<div style="max-width:560px;margin:0 auto;padding:20px 16px">
 
-  <div style="background:linear-gradient(135deg,#0d1a10,#1a2e1f);border:1px solid rgba(201,168,76,0.3);
-              border-radius:10px;padding:20px 24px;margin-bottom:20px">
-    <div style="color:#c9a84c;font-size:11px;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:6px">
-      GreenGuard USA · Daily Route
-    </div>
-    <div style="color:#fff;font-size:22px;font-weight:900">{day_label}</div>
-    <div style="color:#a8edc0;margin-top:6px;font-size:14px">
-      <strong>{len(stops)} stops</strong>&nbsp;&nbsp;·&nbsp;&nbsp;<strong>{day_d} mi / ~{day_m} min</strong>{tank_line}
-    </div>
-  </div>
+  <!-- Logo bar -->
+  <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:16px">
+    <tr>
+      <td style="padding:0 4px">
+        <span style="font-size:15px;font-weight:900;color:#ffffff;letter-spacing:-0.02em">Green<span style="color:#7dffaa">Guard</span> USA</span>
+        <span style="color:rgba(122,171,130,0.4);font-size:13px;margin-left:10px">&middot; Daily Route</span>
+      </td>
+    </tr>
+  </table>
 
-  <table style="width:100%;border-collapse:collapse;background:#111c13;border-radius:10px;overflow:hidden;
-                border:1px solid rgba(122,171,130,0.2)">
+  <!-- Header hero -->
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:linear-gradient(135deg,#0d1a10 0%,#1a2e1f 50%,#2d4a32 100%);border:1px solid rgba(122,171,130,0.2);border-radius:12px;margin-bottom:10px">
+    <tr>
+      <td style="padding:24px 24px 10px 24px">
+        <div style="color:#c9a84c;font-size:10px;font-weight:800;letter-spacing:0.15em;text-transform:uppercase;margin-bottom:8px">Today&#39;s Schedule</div>
+        <div style="color:#ffffff;font-size:28px;font-weight:900;letter-spacing:-0.03em;line-height:1.1">{day_label}</div>
+      </td>
+    </tr>
+    <tr>
+      <td style="padding:12px 24px 22px 24px">
+        <table cellpadding="0" cellspacing="0">
+          <tr>
+            <td style="background:rgba(13,26,16,0.6);border:1px solid rgba(122,171,130,0.2);border-radius:6px;padding:6px 14px;color:#a8edc0;font-size:12px;font-weight:800;letter-spacing:0.04em">{len(stops)} Stops</td>
+            <td style="padding:0 0 0 8px"><span style="background:rgba(13,26,16,0.6);border:1px solid rgba(122,171,130,0.2);border-radius:6px;padding:6px 14px;color:#a8edc0;font-size:12px;font-weight:800;letter-spacing:0.04em;display:inline-block">{day_d} mi &nbsp;/&nbsp; ~{day_m} min</span></td>
+            {tank_pill}
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+
+  <!-- Stop list -->
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#111c13;border:1px solid rgba(122,171,130,0.15);border-radius:12px;overflow:hidden;margin-bottom:12px">
     {rows}
   </table>
 
-  <div style="margin-top:16px;text-align:center">
-    <a href="{maps_link}" style="display:inline-block;background:#c9a84c;color:#0d1a10;font-weight:800;
-       font-size:14px;padding:12px 28px;border-radius:4px;text-decoration:none">
-      Open Full Route in Google Maps
-    </a>
-  </div>
+  <!-- Maps button -->
+  <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:20px">
+    <tr>
+      <td style="text-align:center;padding:4px 0">
+        <a href="{maps_link}" style="display:inline-block;background:#c9a84c;color:#0a1a0d;font-family:'Nunito Sans','Helvetica Neue',Arial,sans-serif;font-weight:900;font-size:13px;padding:14px 40px;border-radius:6px;text-decoration:none;letter-spacing:0.08em;text-transform:uppercase">Open Full Route in Maps</a>
+      </td>
+    </tr>
+  </table>
 
-  <div style="margin-top:20px;text-align:center;color:rgba(255,255,255,0.2);font-size:11px">
-    GreenGuard USA · 1519 Parkway, Austin TX 78703
+  <!-- Footer -->
+  <div style="text-align:center;color:rgba(122,171,130,0.2);font-size:10px;letter-spacing:0.08em;text-transform:uppercase">
+    GreenGuard USA &nbsp;&middot;&nbsp; 1519 Parkway, Austin TX 78703
   </div>
 
 </div>
@@ -95,6 +156,7 @@ def _build_email(day_label: str, stops: list[dict], day_d: float, day_m: int,
 def send_route_email(gmail_service, subject: str, html: str):
     msg = MIMEMultipart("alternative")
     msg["To"]      = ROUTE_TO
+    msg["Cc"]      = ", ".join(ROUTE_CC)
     msg["From"]    = "admin@greenguard-usa.com"
     msg["Subject"] = subject
     msg.attach(MIMEText(html, "html"))
@@ -104,9 +166,8 @@ def send_route_email(gmail_service, subject: str, html: str):
 
 def run(target_date: datetime | None = None):
     if target_date is None:
-        # Default: tomorrow — script runs at midnight for the next day's route
-        today = datetime.now(TZ).replace(hour=0, minute=0, second=0, microsecond=0)
-        target_date = today + timedelta(days=1)
+        # Runs at midnight — send today's route
+        target_date = datetime.now(TZ).replace(hour=0, minute=0, second=0, microsecond=0)
 
     day_start = target_date
     day_end   = target_date.replace(hour=23, minute=59, second=59)
@@ -129,7 +190,7 @@ def run(target_date: datetime | None = None):
         return
 
     # Build distance matrix and optimize
-    customer_tanks = ro._load_customer_tanks()
+    customer_tanks, customer_tanks_by_name = ro._load_customer_tanks()
     cache          = ro._load_cache()
     all_locs       = [ro.DEPOT] + [a["address"] for a in valid]
     addr_idx       = {a["address"]: i + 1 for i, a in enumerate(valid)}
@@ -154,10 +215,11 @@ def run(target_date: datetime | None = None):
         d_mi   = round(dist[prev][stop_idx] / 1609.34, 1)
         d_mn   = round(mins[prev][stop_idx] / 60)
         email  = (ap.get("email") or "").lower()
-        tanks  = customer_tanks.get(email, 0)
+        tanks  = customer_tanks.get(email) or customer_tanks_by_name.get(ap.get("name","").strip().split()[-1].lower(), 0)
         day_tanks += tanks
         stops.append({
             "name":    ap["name"],
+            "service": ap.get("service", ""),
             "sched":   ap["sched"],
             "address": ap["address"],
             "notes":   ap.get("notes"),

@@ -30,7 +30,7 @@ from gmail_client import (
 )
 from calendar_client import get_calendar_service, get_route_distances
 from agent import select_template, EmailDraft
-from appointment_parser import parse_appointment_email, is_appointment_notification
+from appointment_parser import parse_appointment_email, is_appointment_notification, AppointmentInfo
 from address_lookup import lookup_property
 from template_loader import get_all_templates
 from spam_filter import is_spam

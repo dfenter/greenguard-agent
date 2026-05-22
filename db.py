@@ -56,6 +56,14 @@ def init_db() -> None:
                 payload     TEXT,
                 received_at REAL NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS abandoned_carts (
+                session_id  TEXT PRIMARY KEY,
+                email       TEXT,
+                items_json  TEXT,
+                created_at  REAL NOT NULL,
+                recovered   INTEGER DEFAULT 0
+            );
         """)
 
 
@@ -185,6 +193,39 @@ def get_raw_webhooks() -> list[dict]:
             "SELECT trigger, payload, received_at FROM raw_webhooks ORDER BY received_at DESC LIMIT 10"
         ).fetchall()
         return [{"trigger": r["trigger"], "payload": r["payload"], "received_at": r["received_at"]} for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Abandoned cart recovery
+# ---------------------------------------------------------------------------
+
+def save_abandoned_cart(session_id: str, email: str, items_json: str) -> None:
+    with _conn() as con:
+        con.execute(
+            """INSERT OR REPLACE INTO abandoned_carts
+               (session_id, email, items_json, created_at, recovered)
+               VALUES (?, ?, ?, ?, 0)""",
+            (session_id, email, items_json, time.time()),
+        )
+
+
+def get_abandoned_carts(min_age_minutes: int = 60) -> list[dict]:
+    cutoff = time.time() - (min_age_minutes * 60)
+    with _conn() as con:
+        rows = con.execute(
+            """SELECT session_id, email, items_json, created_at FROM abandoned_carts
+               WHERE recovered = 0 AND created_at <= ?""",
+            (cutoff,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def mark_cart_recovered(session_id: str) -> None:
+    with _conn() as con:
+        con.execute(
+            "UPDATE abandoned_carts SET recovered = 1 WHERE session_id = ?",
+            (session_id,),
+        )
 
 
 def record_webhook(uid: str, sku: str, stripe_customer_id: str, invoice_id: str = "") -> None:

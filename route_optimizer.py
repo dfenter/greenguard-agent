@@ -36,16 +36,23 @@ DEPOT         = os.getenv("DEPOT_ADDRESS", "1519 Parkway Austin TX 78703")
 CUSTOMERS_CSV = Path(__file__).parent / "customers.csv"
 
 
-def _load_customer_tanks() -> dict[str, int]:
-    """Return {email: unit_count} from customers.csv."""
+def _load_customer_tanks() -> tuple[dict, dict]:
+    """Return ({email: units}, {lastname_lower: units}) from customers.csv."""
     if not CUSTOMERS_CSV.exists():
-        return {}
+        return {}, {}
+    by_email, by_name = {}, {}
     with open(CUSTOMERS_CSV) as f:
-        return {
-            r["email"].strip().lower(): int(r["units"] or 0)
-            for r in csv.DictReader(f)
-            if r.get("units") and r["units"].strip().isdigit()
-        }
+        for r in csv.DictReader(f):
+            if not (r.get("units") and r["units"].strip().isdigit()):
+                continue
+            units = int(r["units"])
+            if r.get("email"):
+                by_email[r["email"].strip().lower()] = units
+            if r.get("name"):
+                # index by last name for fuzzy fallback
+                last = r["name"].strip().split()[-1].lower()
+                by_name[last] = units
+    return by_email, by_name
 MAPS_KEY     = os.getenv("GOOGLE_MAPS_API_KEY", "")
 TZ_NAME      = os.getenv("CALENDAR_TIMEZONE", "America/Chicago")
 TZ           = ZoneInfo(TZ_NAME)
@@ -257,9 +264,15 @@ def extract_notes(event: dict) -> str | None:
     if not m:
         return None
     raw = m.group(0).replace("Notes:", "").strip()
-    # Strip the address line if it duplicates the address field
     addr = extract_address(event) or ""
-    lines = [ln.strip() for ln in raw.splitlines() if ln.strip() and _norm(ln.strip()) != _norm(addr)]
+    lines = [
+        ln.strip() for ln in raw.splitlines()
+        if ln.strip()
+        and _norm(ln.strip()) != _norm(addr)
+        and "http" not in ln.lower()          # strip Acuity/Cal.com URLs
+        and "acuity" not in ln.lower()
+        and "squarespace" not in ln.lower()
+    ]
     return " | ".join(lines) if lines else None
 
 
@@ -305,10 +318,16 @@ def fetch_week(calendar_service, start: datetime, end: datetime) -> dict[str, li
         dt_end = datetime.fromisoformat(ev["end"]["dateTime"]).astimezone(TZ)
         duration_mins = int((dt_end - dt).total_seconds() / 60)
         day_key = dt.strftime("%a %b %-d")
-        name    = ev.get("summary", "").split(":")[0].strip()
+        summary   = ev.get("summary", "")
+        parts     = summary.split(":", 1)
+        name      = parts[0].strip()
+        service   = parts[1].strip() if len(parts) > 1 else ""
+        # Strip branding suffix
+        service   = re.sub(r'\s*\(GreenGuard USA\)\s*$', '', service, flags=re.IGNORECASE).strip()
         acuity_id = _extract_acuity_id(desc)
         days.setdefault(day_key, []).append({
             "name":          name,
+            "service":       service,
             "sched":         dt.strftime("%-I:%M%p").lower(),
             "dt":            dt,
             "dt_end":        dt_end,
@@ -561,7 +580,16 @@ def run(
         print("No appointments found.")
         return
 
-    customer_tanks = _load_customer_tanks()
+    customer_tanks, customer_tanks_by_name = _load_customer_tanks()
+
+    def _get_tanks(appt: dict) -> int:
+        email = (appt.get("email") or "").lower()
+        if email and email in customer_tanks:
+            return customer_tanks[email]
+        # Fallback: match by last name
+        name = appt.get("name", "")
+        last = name.strip().split()[-1].lower() if name.strip() else ""
+        return customer_tanks_by_name.get(last, 0)
 
     # ── Load-balance summary ──────────────────────────────────────────────────
     print(f"\n{'─'*52}")
@@ -569,7 +597,7 @@ def run(
     print(f"{'─'*52}")
     for day, appts in days.items():
         bad       = sum(1 for a in appts if not a["address"])
-        day_t     = sum(customer_tanks.get((a.get("email") or "").lower(), 0) for a in appts)
+        day_t     = sum(_get_tanks(a) for a in appts)
         warn      = f"  ⚠ {bad} missing addr" if bad else ""
         tank_str  = str(day_t) if day_t else "-"
         print(f"  {day:<14} {len(appts):>5}  {tank_str:>5}{warn}")
@@ -625,8 +653,7 @@ def run(
             d_mi  = round(dist[prev][stop_idx] / 1609.34, 1)
             d_mn  = round(mins[prev][stop_idx] / 60)
             rush  = " ⚡rush hour" if _is_rush(ap["dt"]) else ""
-            email = (ap.get("email") or "").lower()
-            tanks = customer_tanks.get(email, 0)
+            tanks = _get_tanks(ap)
             tank_str = f"  [{tanks}T]" if tanks else ""
             print(f"  {rank}. {ap['name']:<22} {ap['sched']}{rush}{tank_str}")
             print(f"     {ap['address']}")

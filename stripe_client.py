@@ -191,39 +191,103 @@ def create_draft_invoice(
 
 # ── Daily billing runner ──────────────────────────────────────────────────────
 
+def has_successful_payment(customer_id: str) -> bool:
+    """Return True if the customer has at least one paid invoice on record."""
+    _check_key()
+    paid = stripe.Invoice.list(customer=customer_id, status="paid", limit=1)
+    return bool(paid.data)
+
+
+def _collect_failed_invoice(invoice) -> dict:
+    """
+    Attempt to collect a single open/past-due subscription invoice.
+    Only proceeds if the customer has a prior successful payment on record.
+    - charge_automatically: force a new payment attempt via Invoice.pay()
+    - send_invoice: re-send the payment link email via Invoice.send_invoice()
+    Returns a result dict.
+    """
+    inv_id = invoice.id
+    email  = ""
+    try:
+        cust  = stripe.Customer.retrieve(invoice.customer)
+        email = (cust.email or "").lower()
+        amount = f"${invoice.amount_due / 100:.2f}"
+
+        # Only auto-collect if customer has successfully paid before
+        if not has_successful_payment(invoice.customer):
+            return {
+                "invoice_id":  inv_id,
+                "customer":    invoice.customer,
+                "email":       email,
+                "amount":      amount,
+                "action":      "skipped — no prior successful payment",
+                "alert":       f"NO PAYMENT HISTORY — {email} has never successfully paid. Manual follow-up required.",
+                "failed_retry": False,
+            }
+
+        if invoice.collection_method == "charge_automatically":
+            stripe.Invoice.pay(inv_id, forgive=True)
+            action = "retried charge"
+        else:
+            stripe.Invoice.send_invoice(inv_id)
+            action = "resent payment link"
+
+        return {
+            "invoice_id":   inv_id,
+            "customer":     invoice.customer,
+            "email":        email,
+            "amount":       amount,
+            "action":       action,
+            "failed_retry": False,
+        }
+    except stripe.StripeError as e:
+        return {
+            "invoice_id":   inv_id,
+            "customer":     invoice.customer,
+            "email":        email,
+            "error":        str(e),
+            "failed_retry": True,
+        }
+
+
 def process_due_invoices(prices: dict, addons_config: dict) -> list[dict]:
     """
-    Find all draft invoices where billing_date <= today, add any customer default
-    add-ons, apply tax, finalize and send.
+    Phase 1 — Draft invoices: finalize and send any draft invoices whose
+    billing_date <= today, adding customer default add-ons and tax.
+
+    Phase 2 — Failed subscription invoices: for any open subscription invoice
+    that is past its due date, attempt to collect each one individually
+    (retry charge or re-send payment link).
+
     Called by the /billing/run endpoint daily at 6am CT.
 
     prices:        {SKU_CODE: stripe_price_id} from stripe_prices.json
-    addons_config: {email: [SKU_CODE, ...]} from customer_addons.json
+    addons_config: {email: {SKU_CODE: quantity}} from customer_addons.json
     """
     _check_key()
-    today      = datetime.now(timezone.utc).date().isoformat()
-    tax_id     = get_tax_rate_id()
-    processed  = []
+    today     = datetime.now(timezone.utc).date().isoformat()
+    tax_id    = get_tax_rate_id()
+    processed = []
 
-    # Build email → customer_id lookup for add-on matching
+    # ── Phase 1: draft invoices due today ────────────────────────────────────
     email_to_id: dict[str, str] = {}
 
     for invoice in stripe.Invoice.list(status="draft", limit=100).auto_paging_iter():
-        meta = {k: v for k, v in invoice.metadata.to_dict().items()} if invoice.metadata else {}
+        meta         = invoice.metadata.to_dict() if invoice.metadata else {}
         billing_date = meta.get("billing_date", "")
         if not billing_date or billing_date > today:
             continue
 
         try:
             customer_id = invoice.customer
-            # Resolve customer email for add-on lookup
             if customer_id not in email_to_id:
                 cust = stripe.Customer.retrieve(customer_id)
                 email_to_id[customer_id] = (cust.email or "").lower()
             email = email_to_id[customer_id]
 
-            # Add customer default add-ons — format: {SKU: quantity}
             for addon_sku, qty in addons_config.get(email, {}).items():
+                if not isinstance(qty, int):
+                    continue
                 addon_price_id = prices.get(addon_sku)
                 if addon_price_id and qty > 0:
                     for _ in range(qty):
@@ -233,9 +297,7 @@ def process_due_invoices(prices: dict, addons_config: dict) -> list[dict]:
                             invoice=invoice.id,
                         )
 
-            # Ensure tax rate is on the invoice
             stripe.Invoice.modify(invoice.id, default_tax_rates=[tax_id])
-
             stripe.Invoice.finalize_invoice(invoice.id)
             stripe.Invoice.send_invoice(invoice.id)
             inv = stripe.Invoice.retrieve(invoice.id)
@@ -246,6 +308,7 @@ def process_due_invoices(prices: dict, addons_config: dict) -> list[dict]:
                 "sku":          meta.get("sku", ""),
                 "billing_date": billing_date,
                 "amount":       f"${inv.amount_due / 100:.2f}",
+                "phase":        "draft",
             })
         except stripe.StripeError as e:
             processed.append({
@@ -253,6 +316,49 @@ def process_due_invoices(prices: dict, addons_config: dict) -> list[dict]:
                 "customer":     invoice.customer,
                 "error":        str(e),
                 "billing_date": billing_date,
+                "phase":        "draft",
             })
+
+    # ── Phase 2: open subscription invoices with failed payments ─────────────
+    # One collection attempt per customer per run (oldest failed invoice first).
+    # Avoids flooding the customer with multiple emails in a single day.
+    seen_customers: set[str] = set()
+
+    for sub_status in ("past_due", "unpaid"):
+        for sub in stripe.Subscription.list(status=sub_status, limit=100).auto_paging_iter():
+            customer_id = sub.customer
+            if customer_id in seen_customers:
+                continue
+
+            # Get oldest open invoice first (ascending created order)
+            open_invoices = stripe.Invoice.list(
+                customer=customer_id,
+                subscription=sub.id,
+                status="open",
+                limit=100,
+            ).auto_paging_iter()
+
+            open_list = sorted(
+                (inv for inv in open_invoices if inv.amount_due > 0),
+                key=lambda i: i.created,
+            )
+            if not open_list:
+                continue
+
+            seen_customers.add(customer_id)
+            oldest       = open_list[0]
+            failed_count = len(open_list)
+
+            result = _collect_failed_invoice(oldest)
+            result["phase"]        = "failed_subscription"
+            result["failed_count"] = failed_count
+            # Flag customers with multiple failures for admin review
+            if failed_count > 1:
+                total_owed = sum(i.amount_due for i in open_list)
+                result["alert"] = (
+                    f"MULTIPLE FAILURES — {failed_count} unpaid invoices, "
+                    f"${total_owed / 100:.2f} total owed. Collecting oldest first."
+                )
+            processed.append(result)
 
     return processed
