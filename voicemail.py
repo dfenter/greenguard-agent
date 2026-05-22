@@ -49,11 +49,43 @@ def _file_hash(path: Path) -> str:
 
 
 def transcribe(audio_path: Path) -> str:
-    """Transcribe audio file using faster-whisper. Returns transcript text."""
-    from faster_whisper import WhisperModel
-    model = WhisperModel(WHISPER_MODEL, device="cpu", compute_type="int8")
-    segments, _ = model.transcribe(str(audio_path), language="en")
-    return " ".join(seg.text.strip() for seg in segments).strip()
+    """Transcribe audio file using whisper-cpp CLI. Returns transcript text."""
+    import subprocess, shutil
+
+    whisper_bin = shutil.which("whisper-cpp") or shutil.which("whisper")
+    if not whisper_bin:
+        raise RuntimeError("whisper-cpp not found — run: brew install whisper-cpp")
+
+    # whisper-cpp needs a .wav file
+    wav_path = audio_path.with_suffix(".wav")
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", str(audio_path), "-ar", "16000", "-ac", "1", str(wav_path)],
+        check=True, capture_output=True,
+    )
+
+    result = subprocess.run(
+        [whisper_bin, "-m", _model_path(), "-f", str(wav_path), "--output-txt", "--no-timestamps"],
+        capture_output=True, text=True,
+    )
+    wav_path.unlink(missing_ok=True)
+
+    return result.stdout.strip()
+
+
+def _model_path() -> str:
+    """Return path to whisper ggml model, downloading base.en if needed."""
+    import urllib.request
+    models_dir = Path.home() / ".cache/whisper-cpp"
+    models_dir.mkdir(parents=True, exist_ok=True)
+    model_file = models_dir / "ggml-base.en.bin"
+    if not model_file.exists():
+        log.info("Downloading Whisper base.en model (~145 MB)…")
+        urllib.request.urlretrieve(
+            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin",
+            model_file,
+        )
+        log.info("Model downloaded.")
+    return str(model_file)
 
 
 def process_voicemail(audio_path: Path) -> None:
