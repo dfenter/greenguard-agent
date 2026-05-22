@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.greenguard.voicemail</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Library/Frameworks/Python.framework/Versions/3.13/bin/python3</string>
+        <string>/Users/lucille/greenguard_agent/voicemail.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/lucille/greenguard_agent</string>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/lucille/greenguard_agent/logs/voicemail.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/lucille/greenguard_agent/logs/voicemail.error.log</string>
+</dict>
+</plist>
