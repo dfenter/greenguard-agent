@@ -52,7 +52,7 @@ def transcribe(audio_path: Path) -> str:
     """Transcribe audio file using whisper-cpp CLI. Returns transcript text."""
     import subprocess, shutil
 
-    whisper_bin = shutil.which("whisper-cpp") or shutil.which("whisper")
+    whisper_bin = shutil.which("whisper-cli") or shutil.which("whisper-cpp") or shutil.which("whisper")
     if not whisper_bin:
         raise RuntimeError("whisper-cpp not found — run: brew install whisper-cpp")
 
