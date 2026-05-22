@@ -32,6 +32,7 @@ import calcom_client
 import db
 import sku_engine
 import stripe_client
+import sms_client
 
 load_dotenv()
 
@@ -224,6 +225,12 @@ async def billing_run(request: Request):
         else:
             phase = r.get("phase", "")
             log.info(f"[{phase}] {r.get('email')} — {r.get('amount')} — {r.get('action', r.get('sku', ''))}")
+
+    if alerts and sms_client.ADMIN_SMS:
+        lines = [f"GreenGuard billing alert — {len(alerts)} issue(s):"]
+        for a in alerts[:3]:
+            lines.append(f"• {a.get('email','?')} {a.get('amount','')}: {a.get('alert','')[:80]}")
+        sms_client.send_sms(sms_client.ADMIN_SMS, "\n".join(lines))
     return JSONResponse({
         "processed": len(results),
         "alerts":    len(alerts),

@@ -20,6 +20,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 from googleapiclient.discovery import build
 
+import sms_client
+
 load_dotenv()
 
 _DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -32,6 +34,11 @@ LOG_FILE  = Path(_DIR) / "reminder_log.json"
 def _extract_email(desc: str) -> str | None:
     m = re.search(r"Email:\s*(\S+@\S+)", desc)
     return m.group(1).strip().lower() if m else None
+
+
+def _extract_phone(desc: str) -> str | None:
+    m = re.search(r"(?:Phone|Mobile|Cell)[\s:]*([+\d\s\(\)\-\.]{7,20})", desc, re.IGNORECASE)
+    return m.group(1).strip() if m else None
 
 
 def _extract_address(event: dict) -> str | None:
@@ -196,6 +203,7 @@ def run(target_date: datetime | None = None):
         service = parts[1].strip() if len(parts) > 1 else summary.strip()
 
         email   = _extract_email(desc)
+        phone   = _extract_phone(desc)
         address = _extract_address(ev)
         dt      = datetime.fromisoformat(ev["start"]["dateTime"]).astimezone(TZ)
 
@@ -212,7 +220,20 @@ def run(target_date: datetime | None = None):
         subject, html = _build_email(name, service, dt, address)
         _send(gmail_service, email, subject, html)
         log[ev_id] = datetime.now(TZ).date().isoformat()
-        print(f"  ✓     {name:<28} → {email}")
+
+        sms_sent = False
+        if phone:
+            first = name.split()[0] if name else "there"
+            day_str  = dt.strftime("%A, %B %-d")
+            time_str = dt.strftime("%-I:%M %p")
+            sms_body = (
+                f"Hi {first}, this is GreenGuard USA — reminder your appointment "
+                f"is {day_str} at {time_str}. Questions? Reply or call 512-560-4129."
+            )
+            sms_sent = sms_client.send_sms(phone, sms_body)
+
+        sms_note = " + SMS" if sms_sent else ""
+        print(f"  ✓     {name:<28} → {email}{sms_note}")
         sent += 1
 
     _save_log(log)
