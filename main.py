@@ -15,6 +15,7 @@ Install as a background service (auto-starts on login, restarts on crash):
 """
 
 import os
+import sys
 import re
 import time
 import logging
@@ -375,6 +376,18 @@ def main() -> None:
     log.info("Poll mode: interval=%ds | timezone=%s", POLL_INTERVAL, CALENDAR_TIMEZONE)
     log_daily_route(calendar_service)
 
+    # Check for --once mode (GitHub Actions)
+    once = "--once" in sys.argv or os.getenv("RUN_ONCE") == "1"
+    if once:
+        try:
+            run_once(gmail_service, calendar_service, processed_label_id, class_label_ids)
+            maybe_send_digest(gmail_service, calendar_service)
+            log.info("--once mode: completed single poll cycle")
+        except Exception as exc:
+            log.error("Poll cycle error: %s", exc, exc_info=True)
+        return
+
+    # Standard polling loop
     while True:
         try:
             run_once(gmail_service, calendar_service, processed_label_id, class_label_ids)

@@ -1,8 +1,8 @@
 """
 GreenGuard USA — Stripe billing orchestrator + admin booking server.
 
-Billing is delayed 3 days after appointment date:
-  - Recurring: Stripe subscription with trial_end = appointment + 3 days
+Billing is delayed BILLING_DELAY_DAYS (default 5) days after appointment date:
+  - Recurring: Stripe subscription with trial_end = appointment + delay
   - One-time:  Draft invoice created at booking, finalized by /billing/run daily job
 
 Run locally:
@@ -72,10 +72,11 @@ def _load_prices() -> dict[str, str]:
 # ── Daily billing runner ──────────────────────────────────────────────────────
 
 @app.post("/billing/run")
-async def billing_run(request: Request):
+async def billing_run(request: Request, _: None = Depends(_require_admin)):
     """
     Called daily by GitHub Actions at 6am CT.
     Finalizes and sends all draft Stripe invoices where billing_date <= today.
+    Requires HTTP Basic auth (ADMIN_PASSWORD env var).
     """
     prices = _load_prices()
     addons = json.loads(ADDONS_FILE.read_text()) if ADDONS_FILE.exists() else {}

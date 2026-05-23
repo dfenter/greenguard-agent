@@ -1,9 +1,11 @@
 """
 Stripe API wrapper for GreenGuard USA.
 
-Billing is intentionally delayed 3 days after the appointment date:
-  - Subscriptions: trial_end = appointment_dt + 3 days (Stripe auto-charges after)
+Billing is intentionally delayed after the appointment date:
+  - Subscriptions: trial_end = appointment_dt + BILLING_DELAY_DAYS (Stripe auto-charges after)
   - One-time:      draft invoice created at booking, finalized by daily billing runner
+
+Set BILLING_DELAY_DAYS in .env to override (default: 5).
 """
 
 import os
@@ -16,7 +18,7 @@ load_dotenv()
 
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY", "")
 
-BILLING_DELAY_DAYS = 3
+BILLING_DELAY_DAYS = int(os.getenv("BILLING_DELAY_DAYS", "5"))
 TX_TAX_RATE        = 8.25   # Texas combined sales tax %
 _tax_rate_id: str | None = None
 
