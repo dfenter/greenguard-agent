@@ -12,8 +12,6 @@ services:
         sync: false
       - key: CALCOM_API_KEY
         sync: false
-      - key: CALCOM_WEBHOOK_SECRET
-        sync: false
       - key: TWILIO_ACCOUNT_SID
         sync: false
       - key: TWILIO_AUTH_TOKEN

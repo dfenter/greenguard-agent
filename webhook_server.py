@@ -1,5 +1,5 @@
 """
-GreenGuard USA — Cal.com webhook receiver + Stripe billing orchestrator.
+GreenGuard USA — Stripe billing orchestrator + admin booking server.
 
 Billing is delayed 3 days after appointment date:
   - Recurring: Stripe subscription with trial_end = appointment + 3 days
@@ -12,8 +12,6 @@ Deploy to Render:
     Start command: uvicorn webhook_server:app --host 0.0.0.0 --port $PORT
 """
 
-import hashlib
-import hmac
 import json
 import logging
 import os
@@ -23,21 +21,19 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 import calcom_client
 import db
-import sku_engine
 import stripe_client
 import sms_client
 
 load_dotenv()
 
-CALCOM_WEBHOOK_SECRET = os.getenv("CALCOM_WEBHOOK_SECRET", "")
-ADMIN_PASSWORD        = os.getenv("ADMIN_PASSWORD", "")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
 PRICES_FILE  = Path(__file__).parent / "stripe_prices.json"
 ADDONS_FILE  = Path(__file__).parent / "customer_addons.json"
 
@@ -67,141 +63,10 @@ db.init_db()
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _verify_signature(body: bytes, sig_header: str | None) -> bool:
-    if not CALCOM_WEBHOOK_SECRET:
-        log.warning("CALCOM_WEBHOOK_SECRET not set — skipping signature verification")
-        return True
-    if not sig_header:
-        return False
-    expected = hmac.new(
-        CALCOM_WEBHOOK_SECRET.encode(),
-        body,
-        hashlib.sha256,
-    ).hexdigest()
-    return hmac.compare_digest(expected, sig_header.lstrip("sha256="))
-
-
 def _load_prices() -> dict[str, str]:
     if not PRICES_FILE.exists():
         raise RuntimeError("stripe_prices.json not found — run stripe_setup.py first")
     return json.loads(PRICES_FILE.read_text())
-
-
-def _parse_appointment_dt(booking: dict) -> datetime:
-    """Parse Cal.com startTime into a UTC-aware datetime."""
-    raw = booking.get("startTime", "")
-    try:
-        return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(timezone.utc)
-    except Exception:
-        return datetime.now(timezone.utc)
-
-
-# ── Booking webhook ───────────────────────────────────────────────────────────
-
-@app.post("/webhook/calcom")
-async def calcom_webhook(
-    request: Request,
-    x_cal_signature_256: str | None = Header(default=None),
-):
-    body = await request.body()
-
-    if not _verify_signature(body, x_cal_signature_256):
-        log.warning("Webhook signature verification failed")
-        raise HTTPException(status_code=401, detail="Invalid signature")
-
-    try:
-        payload = json.loads(body)
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON")
-
-    trigger = payload.get("triggerEvent", "")
-    log.info(f"Webhook received: trigger={trigger}")
-    db.record_raw_webhook(trigger, body.decode())
-
-    if trigger != "BOOKING_CREATED":
-        return JSONResponse({"status": "ignored", "trigger": trigger})
-
-    booking = payload.get("payload", {})
-    uid     = booking.get("uid", "")
-    slug    = booking.get("type") or booking.get("eventTypeSlug") or booking.get("eventType", {}).get("slug", "")
-
-    attendees    = booking.get("attendees", [])
-    attendee     = next((a for a in attendees if not a.get("host")), attendees[0] if attendees else {})
-    name         = attendee.get("name", "Unknown")
-    email        = attendee.get("email", "")
-    phone        = attendee.get("phoneNumber") or attendee.get("phone")
-    appointment_dt = _parse_appointment_dt(booking)
-
-    log.info(f"Booking: uid={uid} slug={slug} email={email} appt={appointment_dt.date()}")
-
-    if db.is_webhook_processed(uid):
-        log.info(f"Duplicate webhook uid={uid} — skipping")
-        return JSONResponse({"status": "duplicate"})
-
-    if not email:
-        log.warning(f"No email for uid={uid}")
-        return JSONResponse({"status": "no_email"})
-
-    sku = sku_engine.resolve(slug)
-    if sku is None:
-        log.warning(f"Unknown slug '{slug}' for uid={uid}")
-        db.record_webhook(uid, slug or "UNKNOWN", "", "")
-        return JSONResponse({"status": "unknown_slug", "slug": slug})
-
-    try:
-        prices = _load_prices()
-    except RuntimeError as e:
-        log.error(str(e))
-        raise HTTPException(status_code=500, detail=str(e))
-
-    price_id = prices.get(sku.code)
-    if not price_id:
-        log.error(f"No Stripe price ID for {sku.code}")
-        raise HTTPException(status_code=500, detail=f"Missing price for {sku.code}")
-
-    customer_id = stripe_client.get_or_create_customer(name, email, phone)
-    log.info(f"Stripe customer: {customer_id} ({email})")
-
-    invoice_id = ""
-
-    if sku.billing_type == "recurring":
-        existing = stripe_client.get_active_subscription(customer_id)
-        if existing:
-            log.info(f"{email} already has subscription {existing['id']} ({existing['status']}) — skipping")
-        else:
-            sub_id = stripe_client.create_subscription(customer_id, price_id, appointment_dt)
-            billing_start = appointment_dt.date().isoformat()
-            log.info(f"Created subscription {sub_id} for {email} — first charge 3 days after {billing_start}")
-
-    elif sku.billing_type == "one_time" and sku.price_cents > 0:
-        invoice_id = stripe_client.create_draft_invoice(
-            customer_id, sku.price_cents, sku.code, sku.label, appointment_dt,
-        )
-        billing_date = (appointment_dt.date().__add__(__import__("datetime").timedelta(days=3))).isoformat()
-        log.info(f"Draft invoice {invoice_id} for {email} — sends {billing_date}")
-
-    else:
-        log.info(f"Zero-cost visit ({sku.code}) for {email} — no billing action")
-
-    db.record_webhook(uid, sku.code, customer_id, invoice_id)
-
-    # Send updated daily route email for the appointment's date
-    try:
-        import threading, daily_route
-        appt_date = appointment_dt.astimezone(_TZ_CT).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
-        threading.Thread(target=daily_route.run, args=(appt_date,), daemon=True).start()
-        log.info(f"Route email triggered for {appt_date.date()}")
-    except Exception as e:
-        log.warning(f"Route email trigger failed: {e}")
-
-    return JSONResponse({
-        "status":   "ok",
-        "sku":      sku.code,
-        "customer": customer_id,
-        "billing":  f"3 days after {appointment_dt.date()}",
-    })
 
 
 # ── Daily billing runner ──────────────────────────────────────────────────────
