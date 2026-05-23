@@ -34,6 +34,7 @@ load_dotenv()
 
 DEPOT         = os.getenv("DEPOT_ADDRESS", "1519 Parkway Austin TX 78703")
 CUSTOMERS_CSV = Path(__file__).parent / "customers.csv"
+DATABASE_URL  = os.getenv("DATABASE_URL", "")
 
 
 def _load_customer_tanks() -> tuple[dict, dict]:
@@ -61,10 +62,95 @@ CACHE_TTL    = 30 * 86_400   # 30 days in seconds
 BRUTE_LIMIT  = 8             # brute-force up to this many stops
 RUSH_HOURS   = {(7, 9), (16, 18)}  # CDT morning + evening rush windows
 
+USE_DATABASE = bool(DATABASE_URL)
 
-# ── Cache (TTL-aware) ─────────────────────────────────────────────────────────
+if USE_DATABASE:
+    import psycopg2
+    from psycopg2.extras import DictCursor
+else:
+    psycopg2 = None
+
+
+# ── Database cache helpers ────────────────────────────────────────────────────
+
+def _db_conn():
+    """Context manager for database connection."""
+    if not USE_DATABASE:
+        return None
+    try:
+        return psycopg2.connect(DATABASE_URL)
+    except Exception as e:
+        print(f"Warning: could not connect to database ({e}). Using JSON cache.", file=sys.stderr)
+        return None
+
+
+def _db_get(k: str) -> tuple[int, int] | None:
+    """Fetch distance and duration from database."""
+    if not USE_DATABASE:
+        return None
+    try:
+        with _db_conn() as conn:
+            if not conn:
+                return None
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT distance_meters, duration_seconds FROM dist_cache WHERE cache_key = %s",
+                    (k,)
+                )
+                row = cur.fetchone()
+                if row:
+                    return row[0], row[1]
+    except Exception:
+        pass
+    return None
+
+
+def _db_put(k: str, d: int, s: int):
+    """Store distance and duration in database."""
+    if not USE_DATABASE:
+        return
+    try:
+        with _db_conn() as conn:
+            if not conn:
+                return
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO dist_cache (cache_key, distance_meters, duration_seconds) VALUES (%s, %s, %s) ON CONFLICT (cache_key) DO UPDATE SET distance_meters = %s, duration_seconds = %s",
+                    (k, d, s, d, s)
+                )
+            conn.commit()
+    except Exception:
+        pass
+
+
+def _db_prune() -> int:
+    """Delete entries older than CACHE_TTL. Returns count removed."""
+    if not USE_DATABASE:
+        return 0
+    try:
+        with _db_conn() as conn:
+            if not conn:
+                return 0
+            with conn.cursor() as cur:
+                cutoff = datetime.now() - timedelta(seconds=CACHE_TTL)
+                cur.execute(
+                    "DELETE FROM dist_cache WHERE cached_at < %s",
+                    (cutoff,)
+                )
+                deleted = cur.rowcount
+            conn.commit()
+            return deleted
+    except Exception:
+        pass
+    return 0
+
+
+# ── Cache (TTL-aware, JSON fallback) ──────────────────────────────────────────
 
 def _load_cache() -> dict:
+    """Load cache from database or JSON file."""
+    if USE_DATABASE:
+        return {}  # Database is the cache; no pre-loading
     if CACHE_FILE.exists():
         try:
             return json.loads(CACHE_FILE.read_text())
@@ -72,24 +158,37 @@ def _load_cache() -> dict:
             return {}
     return {}
 
+
 def _save_cache(cache: dict):
+    """Save in-memory cache to JSON (only used if no database)."""
+    if USE_DATABASE:
+        return  # Database is persisted via _db_put
     CACHE_FILE.write_text(json.dumps(cache))
+
 
 def _prune_cache(cache: dict) -> int:
     """Remove entries older than CACHE_TTL. Returns count removed."""
+    if USE_DATABASE:
+        return _db_prune()
     cutoff = time.time() - CACHE_TTL
     stale = [k for k, v in cache.items() if isinstance(v, dict) and v.get("ts", 0) < cutoff]
     for k in stale:
         del cache[k]
     return len(stale)
 
+
 def _norm(addr: str) -> str:
     return " ".join(addr.lower().split())
+
 
 def _key(a: str, b: str) -> str:
     return f"{_norm(a)}|||{_norm(b)}"
 
+
 def _get(cache: dict, k: str) -> tuple[int, int] | None:
+    """Get distance/duration from database or in-memory cache."""
+    if USE_DATABASE:
+        return _db_get(k)
     v = cache.get(k)
     if v is None:
         return None
@@ -99,8 +198,13 @@ def _get(cache: dict, k: str) -> tuple[int, int] | None:
         return v[0], v[1]
     return None
 
+
 def _put(cache: dict, k: str, d: int, s: int):
-    cache[k] = {"d": d, "s": s, "ts": int(time.time())}
+    """Store distance/duration in database or in-memory cache."""
+    if USE_DATABASE:
+        _db_put(k, d, s)
+    else:
+        cache[k] = {"d": d, "s": s, "ts": int(time.time())}
 
 
 # ── Google Maps ───────────────────────────────────────────────────────────────

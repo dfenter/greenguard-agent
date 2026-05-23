@@ -16,7 +16,6 @@ Usage:
 
 import argparse
 import base64
-import json
 import os
 import re
 import sys
@@ -24,17 +23,17 @@ import time
 from datetime import datetime, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from pathlib import Path
 
 import anthropic
 from dotenv import load_dotenv
 from googleapiclient.discovery import build
 
+from cloud_state import is_winback_sent, mark_winback_sent
+
 load_dotenv()
 
 _DIR       = os.path.dirname(os.path.abspath(__file__))
 TZ         = timezone(timedelta(hours=-5))   # America/Chicago CDT
-LOG_FILE   = Path(_DIR) / "winback_log.json"
 REVIEW_URL = "https://g.page/r/CW33u4YWYh17EAE/review"
 
 _client = anthropic.Anthropic()
@@ -69,22 +68,6 @@ def _extract_service_type(event: dict) -> str:
     return parts[1].strip() if len(parts) > 1 else summary.strip()
 
 
-# ── Log helpers ───────────────────────────────────────────────────────────────
-
-def _load_log() -> dict:
-    if LOG_FILE.exists():
-        try:
-            return json.loads(LOG_FILE.read_text())
-        except Exception:
-            pass
-    return {}
-
-
-def _save_log(log: dict):
-    # Prune entries older than 180 days
-    cutoff = (datetime.now(TZ) - timedelta(days=180)).date().isoformat()
-    pruned = {k: v for k, v in log.items() if v >= cutoff}
-    LOG_FILE.write_text(json.dumps(pruned, indent=2))
 
 
 # ── Calendar scan ─────────────────────────────────────────────────────────────
@@ -278,13 +261,11 @@ def run(lapsed_days: int = 45, dry_run: bool = False):
         print("  Nothing to do.\n")
         return
 
-    log = _load_log()
     drafted = skipped = 0
 
     for c in candidates:
-        log_key = f"winback_{c['email']}"
-        if log_key in log:
-            print(f"  DUP   {c['name']:<28} already drafted {log[log_key]}")
+        if is_winback_sent(c['email']):
+            print(f"  DUP   {c['name']:<28} already drafted")
             skipped += 1
             continue
 
@@ -296,13 +277,10 @@ def run(lapsed_days: int = 45, dry_run: bool = False):
 
         body = _draft_winback_body(c)
         draft_id = _create_draft(gmail_service, c, body)
-        log[log_key] = datetime.now(TZ).date().isoformat()
+        mark_winback_sent(c['email'])
         print(f"    → Draft created: {draft_id}")
         drafted += 1
         time.sleep(0.5)  # avoid rate-limiting Claude
-
-    if not dry_run:
-        _save_log(log)
 
     action = "candidates found" if dry_run else "draft(s) created"
     print(f"\n  {drafted} {action}  |  {skipped} skipped (already drafted)\n")

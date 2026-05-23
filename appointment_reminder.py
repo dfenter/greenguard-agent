@@ -8,25 +8,23 @@ Run daily at 8 AM CT via launchd (com.greenguard.reminder.plist).
 """
 
 import base64
-import json
 import os
 import re
 import sys
 from datetime import datetime, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from pathlib import Path
 
 from dotenv import load_dotenv
 from googleapiclient.discovery import build
 
 import sms_client
+from cloud_state import is_reminded, mark_reminded
 
 load_dotenv()
 
-_DIR      = os.path.dirname(os.path.abspath(__file__))
-TZ        = timezone(timedelta(hours=-5))   # America/Chicago CDT
-LOG_FILE  = Path(_DIR) / "reminder_log.json"
+_DIR = os.path.dirname(os.path.abspath(__file__))
+TZ   = timezone(timedelta(hours=-5))   # America/Chicago CDT
 
 
 # ── Reused extraction helpers (mirrors route_optimizer.py) ───────────────────
@@ -57,22 +55,6 @@ def _extract_address(event: dict) -> str | None:
     return None
 
 
-# ── Idempotency log ───────────────────────────────────────────────────────────
-
-def _load_log() -> dict:
-    if LOG_FILE.exists():
-        try:
-            return json.loads(LOG_FILE.read_text())
-        except Exception:
-            pass
-    return {}
-
-
-def _save_log(log: dict):
-    # Prune entries older than 7 days
-    cutoff = (datetime.now(TZ) - timedelta(days=7)).date().isoformat()
-    pruned = {k: v for k, v in log.items() if v >= cutoff}
-    LOG_FILE.write_text(json.dumps(pruned, indent=2))
 
 
 # ── Email builder ─────────────────────────────────────────────────────────────
@@ -191,7 +173,6 @@ def run(target_date: datetime | None = None):
     events = [e for e in resp.get("items", []) if e["start"].get("dateTime")]
     print(f"{len(events)} appointment(s) found\n")
 
-    log  = _load_log()
     sent = skipped_dup = skipped_no_email = 0
 
     for ev in events:
@@ -212,14 +193,14 @@ def run(target_date: datetime | None = None):
             skipped_no_email += 1
             continue
 
-        if ev_id in log:
-            print(f"  DUP   {name:<28} already sent {log[ev_id]}")
+        if is_reminded(ev_id):
+            print(f"  DUP   {name:<28} already sent")
             skipped_dup += 1
             continue
 
         subject, html = _build_email(name, service, dt, address)
         _send(gmail_service, email, subject, html)
-        log[ev_id] = datetime.now(TZ).date().isoformat()
+        mark_reminded(ev_id)
 
         sms_sent = False
         if phone:
@@ -235,8 +216,6 @@ def run(target_date: datetime | None = None):
         sms_note = " + SMS" if sms_sent else ""
         print(f"  ✓     {name:<28} → {email}{sms_note}")
         sent += 1
-
-    _save_log(log)
 
     print(f"\n  Sent: {sent}  |  Already sent: {skipped_dup}  |  No email: {skipped_no_email}\n")
 

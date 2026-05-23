@@ -9,25 +9,23 @@ Run daily at 9 AM CT via launchd (com.greenguard.reviewfollowup.plist).
 """
 
 import base64
-import json
 import os
 import re
 import sys
 from datetime import datetime, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from pathlib import Path
 
 from dotenv import load_dotenv
 from googleapiclient.discovery import build
 
 import sms_client
+from cloud_state import is_review_sent, mark_review_sent
 
 load_dotenv()
 
-_DIR     = os.path.dirname(os.path.abspath(__file__))
-TZ       = timezone(timedelta(hours=-5))   # America/Chicago CDT
-LOG_FILE = Path(_DIR) / "review_followup_log.json"
+_DIR = os.path.dirname(os.path.abspath(__file__))
+TZ   = timezone(timedelta(hours=-5))   # America/Chicago CDT
 
 REVIEW_URL = "https://g.page/r/CW33u4YWYh17EAE/review"
 
@@ -44,21 +42,6 @@ def _extract_phone(desc: str) -> str | None:
     return m.group(1).strip() if m else None
 
 
-# ── Idempotency log ───────────────────────────────────────────────────────────
-
-def _load_log() -> dict:
-    if LOG_FILE.exists():
-        try:
-            return json.loads(LOG_FILE.read_text())
-        except Exception:
-            pass
-    return {}
-
-
-def _save_log(log: dict):
-    cutoff = (datetime.now(TZ) - timedelta(days=60)).date().isoformat()
-    pruned = {k: v for k, v in log.items() if v >= cutoff}
-    LOG_FILE.write_text(json.dumps(pruned, indent=2))
 
 
 # ── Email builder ─────────────────────────────────────────────────────────────
@@ -144,7 +127,6 @@ def run(target_date: datetime | None = None):
     events = [e for e in resp.get("items", []) if e["start"].get("dateTime")]
     print(f"{len(events)} appointment(s) in window\n")
 
-    log  = _load_log()
     sent = skipped_dup = skipped_no_email = 0
 
     for ev in events:
@@ -159,15 +141,14 @@ def run(target_date: datetime | None = None):
             skipped_no_email += 1
             continue
 
-        log_key = f"followup_{ev_id}"
-        if log_key in log:
-            print(f"  DUP   {name:<28} already sent {log[log_key]}")
+        if is_review_sent(ev_id):
+            print(f"  DUP   {name:<28} already sent")
             skipped_dup += 1
             continue
 
         subject, html = _build_email(name)
         _send(gmail_service, email, subject, html)
-        log[log_key] = now.date().isoformat()
+        mark_review_sent(ev_id)
 
         sms_sent = False
         if phone:
@@ -181,8 +162,6 @@ def run(target_date: datetime | None = None):
         sms_note = " + SMS" if sms_sent else ""
         print(f"  ✓     {name:<28} → {email}{sms_note}")
         sent += 1
-
-    _save_log(log)
     print(f"\n  Sent: {sent}  |  Already sent: {skipped_dup}  |  No email: {skipped_no_email}\n")
 
 
