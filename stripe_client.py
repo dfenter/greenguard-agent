@@ -24,20 +24,28 @@ _tax_rate_id: str | None = None
 
 
 def get_tax_rate_id() -> str:
-    """Return cached Texas 8.25% tax rate ID, creating it in Stripe if needed."""
+    """Return cached Texas 8.25% tax rate ID, creating it in Stripe if needed.
+
+    Source-of-truth ordering:
+      1. STRIPE_TAX_RATE_ID env var (matches what the portal uses)
+      2. _TAX_RATE in stripe_prices_live.json
+      3. Create fresh in Stripe and cache to _live.json
+    """
     global _tax_rate_id
     if _tax_rate_id:
         return _tax_rate_id
-    # Check stripe_prices.json for cached ID
+    env_id = os.getenv("STRIPE_TAX_RATE_ID")
+    if env_id:
+        _tax_rate_id = env_id
+        return _tax_rate_id
     import json
     from pathlib import Path
-    pf = Path(__file__).parent / "stripe_prices.json"
+    pf = Path(__file__).parent / "stripe_prices_live.json"
     if pf.exists():
         data = json.loads(pf.read_text())
-        if "_TAX_RATE" in data:
+        if data.get("_TAX_RATE"):
             _tax_rate_id = data["_TAX_RATE"]
             return _tax_rate_id
-    # Create new tax rate in Stripe
     _check_key()
     rate = stripe.TaxRate.create(
         display_name="Texas Sales Tax",
