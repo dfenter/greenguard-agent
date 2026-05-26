@@ -21,7 +21,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, Form, HTTPException, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, Form, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
@@ -356,6 +356,192 @@ def _send_recovery_email(email: str, items: list, checkout_url: str):
     gmail_service.users().messages().send(userId="me", body={"raw": raw}).execute()
 
 
+# ── Equipment drop-ship (Biogents) ───────────────────────────────────────────
+
+@app.post("/equipment/order")
+async def equipment_order(request: Request, _: None = Depends(_require_admin)):
+    """
+    Manually trigger a Biogents drop-ship order.
+    Body: {sku, quantity, customer_email, customer_name,
+           ship_to_address, ship_to_city, ship_to_state, ship_to_zip, ship_to_phone?}
+    Returns: {biogents_order_id}
+    """
+    import asyncio
+    from biogentspro_client import place_order, run_with_browser
+
+    body = await request.json()
+    required = ["sku", "quantity", "customer_email", "customer_name",
+                "ship_to_address", "ship_to_city", "ship_to_state", "ship_to_zip"]
+    missing = [f for f in required if not body.get(f)]
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Missing fields: {missing}")
+
+    sku           = body["sku"]
+    quantity      = int(body["quantity"])
+    customer_email = body["customer_email"]
+    customer_name  = body["customer_name"]
+    ship_address   = body["ship_to_address"]
+    ship_city      = body["ship_to_city"]
+    ship_state     = body["ship_to_state"]
+    ship_zip       = body["ship_to_zip"]
+    ship_phone     = body.get("ship_to_phone", "")
+
+    async def _do_order(page):
+        return await place_order(
+            page, sku, quantity,
+            ship_to_name=customer_name,
+            ship_to_address=ship_address,
+            ship_to_city=ship_city,
+            ship_to_state=ship_state,
+            ship_to_zip=ship_zip,
+            ship_to_phone=ship_phone,
+        )
+
+    biogents_order_id = await run_with_browser(_do_order)
+
+    db.record_equipment_order(
+        biogents_order_id=biogents_order_id or f"pending-{datetime.now(timezone.utc).timestamp():.0f}",
+        customer_email=customer_email,
+        customer_name=customer_name,
+        sku=sku,
+        quantity=quantity,
+        ship_to_address=f"{ship_address}, {ship_city}, {ship_state} {ship_zip}",
+    )
+
+    if sms_client.ADMIN_SMS:
+        sms_client.send_sms(
+            sms_client.ADMIN_SMS,
+            f"Biogents order placed: #{biogents_order_id or 'pending'} — {quantity}x {sku} → {customer_name}",
+        )
+
+    log.info("Equipment order placed: %s for %s", biogents_order_id, customer_email)
+    return JSONResponse({"biogents_order_id": biogents_order_id or "pending"})
+
+
+@app.post("/stripe/webhook")
+async def stripe_webhook(request: Request):
+    """
+    Stripe webhook endpoint. Handles checkout.session.completed to trigger
+    Biogents drop-ship orders for equipment purchases.
+
+    Configure in Stripe Dashboard: add this endpoint and subscribe to
+    checkout.session.completed events.
+    """
+    import stripe as _stripe
+    _stripe.api_key = os.getenv("STRIPE_LIVE_KEY") or os.getenv("STRIPE_SECRET_KEY", "")
+    webhook_secret = os.getenv("STRIPE_WEBHOOK_SECRET", "")
+
+    payload = await request.body()
+    sig_header = request.headers.get("stripe-signature", "")
+
+    try:
+        event = _stripe.Webhook.construct_event(payload, sig_header, webhook_secret)
+    except (_stripe.error.SignatureVerificationError, ValueError) as e:
+        log.warning("Stripe webhook signature invalid: %s", e)
+        raise HTTPException(status_code=400, detail="Invalid signature")
+
+    db.record_raw_webhook(event["type"], payload.decode()[:2000])
+
+    if event["type"] == "checkout.session.completed":
+        session = event["data"]["object"]
+        await _handle_equipment_checkout(session)
+
+    return JSONResponse({"received": True})
+
+
+async def _handle_equipment_checkout(session: dict) -> None:
+    """
+    When a Stripe checkout completes, check if it's an equipment purchase
+    and if so, place a drop-ship order with Biogents.
+
+    Equipment SKUs are identified by BIOGENTS_SKUS env var (comma-separated).
+    """
+    import stripe as _stripe
+    import asyncio
+    from biogentspro_client import place_order, run_with_browser
+
+    _stripe.api_key = os.getenv("STRIPE_LIVE_KEY") or os.getenv("STRIPE_SECRET_KEY", "")
+    biogents_skus = {s.strip().lower() for s in os.getenv("BIOGENTS_SKUS", "").split(",") if s.strip()}
+
+    session_id = session.get("id", "")
+    customer_email = session.get("customer_details", {}).get("email", "") or session.get("customer_email", "")
+    customer_name  = session.get("customer_details", {}).get("name", "")
+    shipping       = session.get("shipping_details") or session.get("shipping") or {}
+    ship_addr      = shipping.get("address", {})
+
+    ship_to_address = ship_addr.get("line1", "")
+    ship_to_city    = ship_addr.get("city", "")
+    ship_to_state   = ship_addr.get("state", "")
+    ship_to_zip     = ship_addr.get("postal_code", "")
+    ship_to_phone   = session.get("customer_details", {}).get("phone", "")
+
+    if not ship_to_address:
+        log.info("Checkout %s has no shipping address — skipping Biogents order", session_id)
+        return
+
+    # Retrieve line items to identify equipment SKUs
+    try:
+        line_items = _stripe.checkout.Session.list_line_items(session_id, limit=10)
+    except Exception as exc:
+        log.error("Could not retrieve line items for %s: %s", session_id, exc)
+        return
+
+    for item in line_items.get("data", []):
+        price_id = item.get("price", {}).get("id", "")
+        product_id = item.get("price", {}).get("product", "")
+        qty = item.get("quantity", 1)
+
+        # Check if this price/product maps to a Biogents SKU
+        sku = ""
+        if biogents_skus:
+            item_name = item.get("description", "").lower()
+            for bsku in biogents_skus:
+                if bsku in item_name or bsku in price_id.lower() or bsku in product_id.lower():
+                    sku = bsku
+                    break
+
+        if not sku:
+            continue
+
+        log.info("Equipment purchase detected: sku=%s qty=%d session=%s", sku, qty, session_id)
+
+        async def _do_order(page):
+            return await place_order(
+                page, sku, qty,
+                ship_to_name=customer_name,
+                ship_to_address=ship_to_address,
+                ship_to_city=ship_to_city,
+                ship_to_state=ship_to_state,
+                ship_to_zip=ship_to_zip,
+                ship_to_phone=ship_to_phone,
+            )
+
+        try:
+            biogents_order_id = await run_with_browser(_do_order)
+            db.record_equipment_order(
+                biogents_order_id=biogents_order_id or f"pending-{session_id}",
+                customer_email=customer_email,
+                customer_name=customer_name,
+                sku=sku,
+                quantity=qty,
+                ship_to_address=f"{ship_to_address}, {ship_to_city}, {ship_to_state} {ship_to_zip}",
+                stripe_session_id=session_id,
+            )
+            if sms_client.ADMIN_SMS:
+                sms_client.send_sms(
+                    sms_client.ADMIN_SMS,
+                    f"Auto drop-ship: #{biogents_order_id or 'pending'} — {qty}x {sku} → {customer_name} ({customer_email})",
+                )
+            log.info("Drop-ship order placed for %s: Biogents #%s", customer_email, biogents_order_id)
+        except Exception as exc:
+            log.error("Failed to place Biogents order for session %s: %s", session_id, exc, exc_info=True)
+            if sms_client.ADMIN_SMS:
+                sms_client.send_sms(
+                    sms_client.ADMIN_SMS,
+                    f"ALERT: Failed to place Biogents drop-ship for {customer_email} ({sku} x{qty}). Check logs.",
+                )
+
+
 # ── Health + debug ────────────────────────────────────────────────────────────
 
 @app.get("/health")
@@ -366,3 +552,113 @@ def health():
 @app.get("/debug/webhooks")
 def debug_webhooks():
     return JSONResponse(db.get_raw_webhooks())
+
+
+# ── Cron HTTP endpoints ──────────────────────────────────────────────────────
+#
+# Cloudflare Workers Cron (greenguard-cron) calls these on schedule. They
+# replace the GitHub Actions cron-* workflows that previously ran the agent
+# scripts. Auth: x-cron-key (or Authorization: Bearer <secret>) must match
+# CRON_SECRET in env.
+#
+# Each endpoint queues the real work via BackgroundTasks so the HTTP response
+# returns in <1s; this avoids the Worker holding the connection open for the
+# 10–60s the scripts can take when they actually have work to do.
+
+
+def _require_cron_secret(
+    x_cron_key: str | None = Header(default=None),
+    authorization: str | None = Header(default=None),
+):
+    secret = os.getenv("CRON_SECRET")
+    if not secret:
+        raise HTTPException(status_code=503, detail="CRON_SECRET not configured")
+    bearer = (authorization or "").removeprefix("Bearer ").strip()
+    if x_cron_key == secret or bearer == secret:
+        return
+    raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+def _safe_run(label: str, fn, *args, **kwargs):
+    try:
+        log.info("cron %s — start", label)
+        fn(*args, **kwargs)
+        log.info("cron %s — done", label)
+    except Exception:
+        log.exception("cron %s — failed", label)
+
+
+@app.post("/cron/email-agent")
+@app.get("/cron/email-agent")
+def cron_email_agent(bg: BackgroundTasks, _: None = Depends(_require_cron_secret)):
+    """Process pending Gmail messages once (formerly cron-email-agent.yml,
+    every 5 min)."""
+    def _work():
+        import main as agent_main
+        from gmail_client import authenticate, ensure_labels
+        from calendar_client import get_calendar_service
+        gmail_service = authenticate()
+        calendar_service = get_calendar_service()
+        processed_label_id, class_label_ids = ensure_labels(gmail_service)
+        agent_main.run_once(gmail_service, calendar_service, processed_label_id, class_label_ids)
+        agent_main.maybe_send_digest(gmail_service, calendar_service)
+    bg.add_task(_safe_run, "email-agent", _work)
+    return {"queued": "email-agent"}
+
+
+@app.post("/cron/daily-route")
+@app.get("/cron/daily-route")
+def cron_daily_route(bg: BackgroundTasks, _: None = Depends(_require_cron_secret)):
+    """Email tomorrow's route (formerly cron-daily-route.yml, 7:30am CT)."""
+    def _work():
+        import daily_route
+        daily_route.run()
+    bg.add_task(_safe_run, "daily-route", _work)
+    return {"queued": "daily-route"}
+
+
+@app.post("/cron/appointment-reminders")
+@app.get("/cron/appointment-reminders")
+def cron_appointment_reminders(bg: BackgroundTasks, _: None = Depends(_require_cron_secret)):
+    """Send T-2-day appointment reminders (formerly cron-appointment-reminders.yml,
+    1pm CT)."""
+    def _work():
+        import appointment_reminder
+        appointment_reminder.run()
+    bg.add_task(_safe_run, "appointment-reminders", _work)
+    return {"queued": "appointment-reminders"}
+
+
+@app.post("/cron/post-appointment")
+@app.get("/cron/post-appointment")
+def cron_post_appointment(bg: BackgroundTasks, _: None = Depends(_require_cron_secret)):
+    """Send post-visit thank-yous (formerly cron-post-appointment.yml, 8am CT)."""
+    def _work():
+        import post_appointment
+        post_appointment.run()
+    bg.add_task(_safe_run, "post-appointment", _work)
+    return {"queued": "post-appointment"}
+
+
+@app.post("/cron/review-followup")
+@app.get("/cron/review-followup")
+def cron_review_followup(bg: BackgroundTasks, _: None = Depends(_require_cron_secret)):
+    """Ask for Google reviews 5 days post-visit (formerly cron-review-followup.yml,
+    9:15am CT)."""
+    def _work():
+        import review_followup
+        review_followup.run()
+    bg.add_task(_safe_run, "review-followup", _work)
+    return {"queued": "review-followup"}
+
+
+@app.post("/cron/winback")
+@app.get("/cron/winback")
+def cron_winback(bg: BackgroundTasks, _: None = Depends(_require_cron_secret)):
+    """Lapsed-customer winback drafts (formerly cron-winback.yml, Mondays —
+    currently disabled in production)."""
+    def _work():
+        import winback
+        winback.run(lapsed_days=45, dry_run=False)
+    bg.add_task(_safe_run, "winback", _work)
+    return {"queued": "winback"}
