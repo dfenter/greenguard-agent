@@ -662,3 +662,59 @@ def cron_winback(bg: BackgroundTasks, _: None = Depends(_require_cron_secret)):
         winback.run(lapsed_days=45, dry_run=False)
     bg.add_task(_safe_run, "winback", _work)
     return {"queued": "winback"}
+
+
+@app.post("/cron/route-optimizer")
+@app.get("/cron/route-optimizer")
+def cron_route_optimizer(bg: BackgroundTasks, _: None = Depends(_require_cron_secret)):
+    """Weekly route plan generator (formerly .github/workflows/route-optimizer.yml,
+    Mondays 09:00 CT). Runs synchronously rather than via BackgroundTasks so we
+    can email a summary of the result on completion."""
+    def _work():
+        import weekly_route_optimizer
+        plan = weekly_route_optimizer.main()
+        if not plan:
+            return
+        # Persist as JSON keyed by week label, plus a "latest" pointer.
+        db.set_state(f"route_plan:{plan['week']}", json.dumps(plan))
+        db.set_state("route_plan:latest_week", plan["week"])
+        # Replaces the GitHub-issue approval flow with a Resend email summary.
+        try:
+            from resend import Resend
+            resend = Resend(api_key=os.environ["RESEND_API_KEY"])
+            body_lines = []
+            for d in plan["days"]:
+                rows = "".join(
+                    f"<li>{i+1}. {s.get('customer','Customer')} — {s.get('address','')} "
+                    f"({s.get('duration_min',0)} min)</li>"
+                    for i, s in enumerate(d["stops"])
+                )
+                body_lines.append(
+                    f"<h3>{d['date']} — {d['stop_count']} stops "
+                    f"(~{d['total_service_min']} min)</h3>"
+                    f"<p><a href=\"{d['maps_url']}\">Open in Maps</a></p><ol>{rows}</ol>"
+                )
+            resend.emails.send({
+                "from": "GreenGuard Route Planner <noreply@greenguard-usa.com>",
+                "to": "admin@greenguard-usa.com",
+                "subject": f"📍 Route plan for {plan['week']}",
+                "html": f"<p>Weekly route plan generated.</p>{''.join(body_lines)}",
+            })
+        except Exception:
+            log.exception("route-optimizer summary email failed")
+    bg.add_task(_safe_run, "route-optimizer", _work)
+    return {"queued": "route-optimizer"}
+
+
+@app.get("/route-plans/latest")
+def get_latest_route_plan(_: None = Depends(_require_cron_secret)):
+    """Returns the most recently generated weekly route plan. Used by the
+    portal /admin/route and /admin/rounds pages in place of the bundled
+    public/data/route_plan_*.json files."""
+    latest_week = db.get_state("route_plan:latest_week")
+    if not latest_week:
+        return JSONResponse({"error": "no plan generated yet"}, status_code=404)
+    raw = db.get_state(f"route_plan:{latest_week}")
+    if not raw:
+        return JSONResponse({"error": "plan record missing"}, status_code=404)
+    return JSONResponse(json.loads(raw))
