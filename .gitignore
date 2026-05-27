@@ -6,6 +6,7 @@ token.json
 # Local state files
 .dist_cache.json
 .calcom_imported.json
+.idempotency_log.json
 greenguard.db
 logs/
 

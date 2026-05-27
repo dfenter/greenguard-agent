@@ -37,6 +37,7 @@ from template_loader import get_all_templates
 from spam_filter import is_spam
 import db
 from digest import should_send_digest, build_digest
+import gemini_client
 
 load_dotenv()
 logging.basicConfig(
@@ -250,6 +251,136 @@ def _personalize(template_body: str, appt: AppointmentInfo) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Biogents shipping email detection + customer notification
+# ---------------------------------------------------------------------------
+
+_BIOGENTS_SENDERS = {"biogentspro.com", "biogents.com"}
+_SHIPPING_KEYWORDS = {"shipped", "tracking", "on its way", "has been shipped", "order shipped"}
+
+
+def _is_biogents_shipping_email(sender: str, subject: str) -> bool:
+    sender_lower = sender.lower()
+    subject_lower = subject.lower()
+    from_biogents = any(domain in sender_lower for domain in _BIOGENTS_SENDERS)
+    has_shipping_keyword = any(kw in subject_lower for kw in _SHIPPING_KEYWORDS)
+    return from_biogents or (has_shipping_keyword and "biogents" in subject_lower)
+
+
+def _parse_shipping_email(subject: str, body: str) -> dict:
+    """Extract order ID, tracking number, carrier, and product name from a Biogents shipping email."""
+    import re
+    result = {"order_id": "", "tracking_number": "", "carrier": "", "product_name": ""}
+
+    # Order ID
+    m = re.search(r"(?:order|#)\s*(?:number|#|id)?\s*:?\s*(\d{4,10})", body + " " + subject, re.IGNORECASE)
+    if m:
+        result["order_id"] = m.group(1)
+
+    # Tracking number — UPS (1Z...), USPS (9400...), FedEx (numeric 12+), generic
+    patterns = [
+        (r"\b(1Z[A-Z0-9]{16})\b", "UPS"),
+        (r"\b(9[24][0-9]{20})\b", "USPS"),
+        (r"\b([0-9]{12,22})\b", "FedEx"),
+    ]
+    for pattern, carrier in patterns:
+        m = re.search(pattern, body)
+        if m:
+            result["tracking_number"] = m.group(1)
+            result["carrier"] = carrier
+            break
+
+    # Generic tracking label fallback
+    if not result["tracking_number"]:
+        m = re.search(r"tracking\s*(?:number|#|id)?\s*:?\s*([A-Z0-9\-]{8,30})", body, re.IGNORECASE)
+        if m:
+            result["tracking_number"] = m.group(1).strip()
+
+    # Product name — look for "BG-Pro" or "BG-" pattern common to Biogents products
+    m = re.search(r"(BG-[A-Za-z0-9\-]+|Biogents\s+\w+(?:\s+\w+)?)", body + " " + subject, re.IGNORECASE)
+    if m:
+        result["product_name"] = m.group(1)
+
+    return result
+
+
+def _handle_biogents_shipping_email(gmail_service, email: dict, processed_label_id: str) -> None:
+    """Detect which customer this order belongs to, then send them a shipping notification."""
+    email_id = email["id"]
+    subject  = email["subject"]
+    body     = email.get("body", "")
+
+    info = _parse_shipping_email(subject, body)
+    log.info(
+        "  → Biogents shipping email: order=%s tracking=%s carrier=%s",
+        info["order_id"], info["tracking_number"], info["carrier"],
+    )
+
+    # Look up the customer from the equipment_orders table
+    order_record = None
+    if info["order_id"]:
+        order_record = db.get_order_by_biogents_id(info["order_id"])
+
+    if not order_record:
+        log.warning("  → No matching equipment order for Biogents order #%s — skipping notification", info["order_id"])
+        mark_processed(gmail_service, email_id, [processed_label_id])
+        return
+
+    # Record the shipment
+    if info["tracking_number"]:
+        db.mark_order_shipped(info["order_id"], info["tracking_number"], info["carrier"])
+
+    customer_email = order_record.get("customer_email", "")
+    customer_name  = order_record.get("customer_name", "")
+    sku            = order_record.get("sku", "")
+    product_name   = info["product_name"] or sku
+
+    if not customer_email:
+        log.warning("  → No customer email for order #%s", info["order_id"])
+        mark_processed(gmail_service, email_id, [processed_label_id])
+        return
+
+    # Draft customer notification via Gemini
+    try:
+        notification_body = gemini_client.draft_shipping_notification(
+            customer_name=customer_name,
+            product_name=product_name,
+            tracking_number=info["tracking_number"],
+            carrier=info["carrier"],
+            order_id=info["order_id"],
+        )
+    except Exception as exc:
+        log.error("  → Gemini draft failed: %s", exc)
+        # Fallback: plain notification
+        first = customer_name.split()[0] if customer_name else "there"
+        notification_body = (
+            f"Hi {first},\n\n"
+            f"Great news! Your {product_name or 'equipment'} has shipped"
+            + (f" via {info['carrier']}" if info["carrier"] else "")
+            + (f" with tracking number {info['tracking_number']}" if info["tracking_number"] else "")
+            + ".\n\nThank you for your order. Please reach out if you have any questions.\n\n"
+            "Best regards,\nGreenguard USA\nadmin@greenguard-usa.com"
+        )
+
+    notification_subject = f"Your Greenguard Equipment Has Shipped!"
+    if info["tracking_number"]:
+        notification_subject += f" Tracking: {info['tracking_number']}"
+
+    try:
+        send_email(
+            gmail_service,
+            to=customer_email,
+            subject=notification_subject,
+            body=notification_body,
+        )
+        db.mark_order_notified(info["order_id"])
+        log.info("  → Shipping notification sent to %s", customer_email)
+    except Exception as exc:
+        log.error("  → Failed to send shipping notification to %s: %s", customer_email, exc)
+
+    mark_processed(gmail_service, email_id, [processed_label_id])
+
+
+# ---------------------------------------------------------------------------
 # Core email processing
 # ---------------------------------------------------------------------------
 def process_email(
@@ -264,6 +395,16 @@ def process_email(
     sender   = email["from"]
 
     log.info("Processing id=%s subject=%r from=%s", email_id, subject, sender)
+
+    # Biogents shipping notifications — handle before the appointment filter
+    if _is_biogents_shipping_email(sender, subject):
+        log.info("  → Biogents shipping email detected")
+        if not db.is_processed(email_id):
+            _handle_biogents_shipping_email(gmail_service, email, processed_label_id)
+        else:
+            log.info("  → Already processed — skipping")
+            mark_processed(gmail_service, email_id, [processed_label_id])
+        return
 
     # Only process property assessment booking notifications — skip everything else
     if not is_appointment_notification(subject):

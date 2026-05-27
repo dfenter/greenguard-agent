@@ -80,6 +80,21 @@ def init_db() -> None:
                     created_at  DOUBLE PRECISION NOT NULL,
                     recovered   INTEGER DEFAULT 0
                 );
+                CREATE TABLE IF NOT EXISTS equipment_orders (
+                    id                  SERIAL PRIMARY KEY,
+                    biogents_order_id   TEXT UNIQUE,
+                    stripe_session_id   TEXT,
+                    customer_email      TEXT,
+                    customer_name       TEXT,
+                    sku                 TEXT,
+                    quantity            INTEGER,
+                    ship_to_address     TEXT,
+                    ordered_at          DOUBLE PRECISION NOT NULL,
+                    shipped_at          DOUBLE PRECISION,
+                    tracking_number     TEXT,
+                    carrier             TEXT,
+                    notified            INTEGER DEFAULT 0
+                );
             """)
     else:
         with _conn() as con:
@@ -116,6 +131,21 @@ def init_db() -> None:
                     items_json  TEXT,
                     created_at  REAL NOT NULL,
                     recovered   INTEGER DEFAULT 0
+                );
+                CREATE TABLE IF NOT EXISTS equipment_orders (
+                    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                    biogents_order_id   TEXT UNIQUE,
+                    stripe_session_id   TEXT,
+                    customer_email      TEXT,
+                    customer_name       TEXT,
+                    sku                 TEXT,
+                    quantity            INTEGER,
+                    ship_to_address     TEXT,
+                    ordered_at          REAL NOT NULL,
+                    shipped_at          REAL,
+                    tracking_number     TEXT,
+                    carrier             TEXT,
+                    notified            INTEGER DEFAULT 0
                 );
             """)
 
@@ -345,6 +375,109 @@ def mark_cart_recovered(session_id: str) -> None:
                 "UPDATE abandoned_carts SET recovered = 1 WHERE session_id = ?",
                 (session_id,),
             )
+
+
+# ---------------------------------------------------------------------------
+# Equipment orders (Biogents drop-ship + restock tracking)
+# ---------------------------------------------------------------------------
+
+def record_equipment_order(
+    biogents_order_id: str,
+    customer_email: str,
+    customer_name: str,
+    sku: str,
+    quantity: int,
+    ship_to_address: str = "",
+    stripe_session_id: str = "",
+) -> None:
+    with _conn() as cur:
+        if USE_POSTGRES:
+            cur.execute(
+                """INSERT INTO equipment_orders
+                   (biogents_order_id, stripe_session_id, customer_email, customer_name,
+                    sku, quantity, ship_to_address, ordered_at)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                   ON CONFLICT (biogents_order_id) DO NOTHING""",
+                (biogents_order_id, stripe_session_id, customer_email, customer_name,
+                 sku, quantity, ship_to_address, time.time()),
+            )
+        else:
+            cur.execute(
+                """INSERT OR IGNORE INTO equipment_orders
+                   (biogents_order_id, stripe_session_id, customer_email, customer_name,
+                    sku, quantity, ship_to_address, ordered_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (biogents_order_id, stripe_session_id, customer_email, customer_name,
+                 sku, quantity, ship_to_address, time.time()),
+            )
+
+
+def get_order_by_biogents_id(biogents_order_id: str) -> dict | None:
+    with _conn() as cur:
+        if USE_POSTGRES:
+            cur.execute(
+                "SELECT * FROM equipment_orders WHERE biogents_order_id = %s",
+                (biogents_order_id,),
+            )
+        else:
+            cur.execute(
+                "SELECT * FROM equipment_orders WHERE biogents_order_id = ?",
+                (biogents_order_id,),
+            )
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+
+def mark_order_shipped(biogents_order_id: str, tracking_number: str, carrier: str) -> None:
+    with _conn() as cur:
+        if USE_POSTGRES:
+            cur.execute(
+                """UPDATE equipment_orders
+                   SET tracking_number = %s, carrier = %s, shipped_at = %s
+                   WHERE biogents_order_id = %s""",
+                (tracking_number, carrier, time.time(), biogents_order_id),
+            )
+        else:
+            cur.execute(
+                """UPDATE equipment_orders
+                   SET tracking_number = ?, carrier = ?, shipped_at = ?
+                   WHERE biogents_order_id = ?""",
+                (tracking_number, carrier, time.time(), biogents_order_id),
+            )
+
+
+def mark_order_notified(biogents_order_id: str) -> None:
+    with _conn() as cur:
+        if USE_POSTGRES:
+            cur.execute(
+                "UPDATE equipment_orders SET notified = 1 WHERE biogents_order_id = %s",
+                (biogents_order_id,),
+            )
+        else:
+            cur.execute(
+                "UPDATE equipment_orders SET notified = 1 WHERE biogents_order_id = ?",
+                (biogents_order_id,),
+            )
+
+
+def get_unnotified_shipped_orders() -> list[dict]:
+    """Return orders that have shipped but haven't had a customer notification sent yet."""
+    with _conn() as cur:
+        if USE_POSTGRES:
+            cur.execute(
+                """SELECT * FROM equipment_orders
+                   WHERE notified = 0 AND shipped_at IS NOT NULL
+                   AND customer_email IS NOT NULL AND customer_email != ''
+                   ORDER BY shipped_at ASC"""
+            )
+        else:
+            cur.execute(
+                """SELECT * FROM equipment_orders
+                   WHERE notified = 0 AND shipped_at IS NOT NULL
+                   AND customer_email IS NOT NULL AND customer_email != ''
+                   ORDER BY shipped_at ASC"""
+            )
+        return [dict(r) for r in cur.fetchall()]
 
 
 def record_webhook(uid: str, sku: str, stripe_customer_id: str, invoice_id: str = "") -> None:
