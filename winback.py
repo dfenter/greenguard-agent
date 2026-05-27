@@ -105,11 +105,11 @@ def _scan_calendar(cal, lapsed_days: int) -> list[dict]:
         timeMin=now.isoformat(),
         timeMax=look_fwd_end,
         singleEvents=True,
-        fields="items(id,description)",
+        fields="items(id,description,start)",
     ).execute()
     fwd_emails = set()
     for e in fwd_resp.get("items", []):
-        if e["start"].get("dateTime"):
+        if e.get("start", {}).get("dateTime"):
             em = _extract_email(e.get("description", "") or "")
             if em:
                 fwd_emails.add(em)
